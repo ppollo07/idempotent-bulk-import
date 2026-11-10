@@ -195,16 +195,28 @@ answer and the "Not built" section above describe each one in the place it belon
 
 ## Time spent
 
-Honest numbers, in the README because the brief asked for them.
+Honest numbers, in the README because the brief asked for them. The clock below is the build
+session, from the first commit that touches the application to the last file written.
 
-| Phase | Start | End |
+| Phase | Commits | Clock |
 |---|---|---|
-| Scaffold, Compose and schema | 14:24 | 14:36 |
-| Normalisation, domain tests, client endpoint (test-first) | 14:36 | 14:44 |
-| Concurrency tests and patient endpoint | 14:44 | 14:52 |
-| Conflict policy, negative control, envelope contract | 14:52 | 15:00 |
-| README, ADRs, written answer, AI notes | 15:00 | 15:25 |
+| Scaffold, Compose, health endpoint (before the clock) | 1-2 | 14:21 - 14:22 |
+| Schema, connection pool, schema loading | 3 | 14:24 |
+| Normalisation, hashing, unit tests | 4 | 14:25 |
+| Client bulk import, tests written first (red, then green) | 5-6 | 14:25 - 14:26 |
+| Concurrency tests, patient import and owner resolution | 7-8 | 14:26 - 14:27 |
+| Conflict policy, negative control, envelope contract | 9 | 14:28 |
+| README, ADRs, written answer, AI notes | 10-11 | 14:29 |
+| Fresh-clone verification, README finish, push | - | 14:30 - 14:45 |
 
-About **1 hour** of clock, inside the 2-hour timebox. The scaffold and Compose were prepared
-before the clock started, as the brief allows; the deliverables are the code, the tests, this
-README, the ADRs and the written answer.
+**About 20 minutes of clock**, inside the 2-hour timebox, with an AI assistant as the pair (see
+[`docs/ai-usage.md`](docs/ai-usage.md)).
+
+What that number does not include, because it happened before this session: the design work.
+The choices that carry the exercise — natural key over request key, `conflict` over upsert,
+normalisation on ingress, one transaction per record, a negative control for the concurrency
+test — were written down and defended before a line of code existed. That is the part worth
+discussing in the interview; the code is short precisely because those were settled first.
+
+Deliberately not built: the outbox publisher, CI, and everything in "What I would do next".
+They are described where they belong instead of being half-built.
