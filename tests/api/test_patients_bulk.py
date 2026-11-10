@@ -78,9 +78,9 @@ def test_a_patient_resent_with_different_data_is_a_conflict(clean_db, live_serve
     create_owners(live_server)
     original = post(live_server, "/patients/bulk", PATIENTS[:1]).json()["results"][0]
 
-    result = post(
-        live_server, "/patients/bulk", [dict(PATIENTS[0], species="cat")]
-    ).json()["results"][0]
+    result = post(live_server, "/patients/bulk", [dict(PATIENTS[0], species="cat")]).json()[
+        "results"
+    ][0]
 
     assert result["status"] == "conflict"
     assert result["id"] == original["id"]

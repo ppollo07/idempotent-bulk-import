@@ -175,9 +175,7 @@ def _existing(conn: Connection, table: str, source_id: str) -> tuple[str, str] |
     return (row[0], row[1]) if row is not None else None
 
 
-def _settle(
-    index: int, source_id: str, existing: tuple[str, str], digest: str
-) -> RecordResult:
+def _settle(index: int, source_id: str, existing: tuple[str, str], digest: str) -> RecordResult:
     """Decide between ``already_existed`` and ``conflict`` for a record that was already there."""
     existing_id, existing_digest = existing
     if existing_digest == digest:

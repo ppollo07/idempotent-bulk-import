@@ -2,6 +2,7 @@
 
 import httpx
 import psycopg
+import pytest
 
 CLIENTS = [
     {"source_id": "C-1", "first_name": "Ana", "last_name": "Ruiz", "email": "ana@example.com"},
@@ -60,9 +61,7 @@ def test_a_record_resent_with_different_data_is_a_conflict_and_is_not_overwritte
     assert count_clients(clean_db) == 1
 
 
-def test_a_record_resent_with_cosmetic_differences_is_not_a_conflict(
-    clean_db, live_server
-) -> None:
+def test_a_record_resent_with_cosmetic_differences_is_not_a_conflict(clean_db, live_server) -> None:
     post(live_server, CLIENTS[:1])
 
     cosmetic = dict(CLIENTS[0], first_name="  Ana ", email=" ANA@Example.com ")
@@ -85,7 +84,8 @@ def test_duplicate_source_id_inside_one_request(clean_db, live_server) -> None:
 
 
 def test_failed_records_do_not_affect_the_rest_of_the_batch(clean_db, live_server) -> None:
-    records = [CLIENTS[0], {"source_id": "C-9", "first_name": "", "last_name": "Sin nombre"}, CLIENTS[1]]
+    invalid = {"source_id": "C-9", "first_name": "", "last_name": "Sin nombre"}
+    records = [CLIENTS[0], invalid, CLIENTS[1]]
 
     response = post(live_server, records)
 
@@ -103,7 +103,29 @@ def test_failed_records_do_not_affect_the_rest_of_the_batch(clean_db, live_serve
 def test_envelope_errors_are_422(clean_db, live_server) -> None:
     empty = post(live_server, [])
     too_many = post(live_server, [dict(CLIENTS[0], source_id=f"C-{i}") for i in range(1001)])
+    wrong_shape = httpx.post(f"{live_server}/clients/bulk", json={"records": "C-1"}, timeout=30)
 
     assert empty.status_code == 422
     assert too_many.status_code == 422
+    assert wrong_shape.status_code == 422
     assert count_clients(clean_db) == 0
+
+
+def test_the_unique_constraint_rejects_a_second_row_with_the_same_source_id(
+    clean_db, live_server
+) -> None:
+    """The constraint the whole design rests on, asserted directly."""
+    clean_db.execute(
+        "INSERT INTO clients (source_id, first_name, last_name, payload_hash) "
+        "VALUES ('C-1', 'Ana', 'Ruiz', 'digest')"
+    )
+    clean_db.commit()
+
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        clean_db.execute(
+            "INSERT INTO clients (source_id, first_name, last_name, payload_hash) "
+            "VALUES ('C-1', 'Ana', 'Ruiz', 'digest')"
+        )
+    clean_db.rollback()
+
+    assert count_clients(clean_db) == 1

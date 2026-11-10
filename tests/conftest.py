@@ -27,7 +27,9 @@ def _ensure_database_exists(url: str) -> None:
     database = parts.path.lstrip("/")
     admin_url = urlunsplit(parts._replace(path="/postgres"))
     with psycopg.connect(admin_url, autocommit=True) as conn:
-        exists = conn.execute("SELECT 1 FROM pg_database WHERE datname = %s", (database,)).fetchone()
+        exists = conn.execute(
+            "SELECT 1 FROM pg_database WHERE datname = %s", (database,)
+        ).fetchone()
         if exists is None:
             conn.execute(f'CREATE DATABASE "{database}"')
 
@@ -78,9 +80,7 @@ def live_server(database_url: str) -> Iterator[str]:
     """A real uvicorn server: concurrent tests need real sockets and real connections."""
     os.environ["DATABASE_URL"] = database_url
     port = _free_port()
-    server = uvicorn.Server(
-        uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
-    )
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
     thread = threading.Thread(target=server.run, daemon=True)
     thread.start()
 
