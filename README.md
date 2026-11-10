@@ -61,7 +61,10 @@ test session and truncated between tests, so `docker compose up` data is never t
 The database log shows **one `duplicate key value violates unique constraint` ERROR** every time
 the suite runs. It is on purpose: `tests/api/test_clients_bulk.py` inserts the same `source_id`
 twice to assert that the constraint rejects it. It happens in `bulk_import_test`, never in
-`bulk_import`, and it is the only error the suite produces.
+`bulk_import`, and it is the only error the suite produces. The single warning left comes from
+inside Starlette's `TestClient` (`anyio.abc.BlockingPortal` alias deprecation), not from this
+code; `requirements.txt` installs plain `uvicorn` rather than `uvicorn[standard]`, because the
+service has no websockets, no `--reload` and no need for `uvloop`.
 
 The concurrency tests start a real uvicorn server on a free port and fire requests from real
 threads over sockets. `TestClient` calls the app in-process, so it cannot show two writers
