@@ -1,0 +1,6 @@
+{
+  "records": [
+    {"source_id": "C-1", "first_name": "Ana", "last_name": "Ruiz", "email": "ana@example.com"},
+    {"source_id": "C-2", "first_name": "Luis", "last_name": "Paz"}
+  ]
+}

@@ -47,7 +47,7 @@ The service is on <http://localhost:8000>, with interactive docs at
 docker compose run --rm tests
 ```
 
-29 tests, about two seconds. To run one file or one test:
+30 tests, about two seconds. To run one file or one test:
 
 ```bash
 docker compose run --rm tests pytest tests/api -q          # the HTTP contract
@@ -87,6 +87,10 @@ src/bulk_import/
   import_service.py the use case: one short transaction per record
   db.py             pool sizing, schema loading, no ORM
   schema.sql        clients, patients, and the UNIQUE constraints everything rests on
+examples/           the requests used in this README, as files a test also posts
+scripts/
+  demo.sh           a scripted migration: five requests and the report for each
+  report.py         prints one response as a report; standard library only
 tests/
   unit/             normalisation and hashing, no database
   api/              the HTTP contract: statuses, conflicts, 422 vs failed
@@ -185,7 +189,9 @@ the other 999.
 ## Verify it by hand
 
 Seven requests, in order, against a fresh `docker compose up`. Each one ends with the part of
-the answer that matters; ids are random per run.
+the answer that matters; ids are random per run. The same requests are also files in
+[`examples/`](examples), and [the section after this one](#examples-and-a-scripted-run) runs them
+for you.
 
 **1. Create two clients.** One request, many records, one result each:
 
@@ -306,6 +312,101 @@ curl -s -X POST localhost:8000/patients/bulk -H 'content-type: application/json'
 Step 6 rejects the whole request because the envelope is unusable; step 7 accepts the request
 and reports the one bad record. That boundary is what makes per-record outcomes possible.
 
+## Examples, and a scripted run
+
+The requests above also exist as files, so nobody has to retype JSON to try the service:
+
+| File | What it demonstrates |
+|---|---|
+| [`clients-batch.json`](examples/clients-batch.json) | the full load: two new clients |
+| [`clients-cosmetic-retry.json`](examples/clients-cosmetic-retry.json) | the same two with whitespace and email case changed: normalisation, same ids |
+| [`clients-changed.json`](examples/clients-changed.json) | one client with a different surname: a conflict, nothing overwritten |
+| [`clients-mixed.json`](examples/clients-mixed.json) | one valid, one invalid, and one duplicate source_id inside the same request |
+| [`patients-batch.json`](examples/patients-batch.json) | one patient whose owner exists, one whose owner does not |
+
+Responses are deliberately **not** committed as files: they contain generated UUIDs, so they
+would be wrong the next time anyone ran them. Instead
+[`tests/api/test_examples.py`](tests/api/test_examples.py) posts every file in the order below
+and asserts the outcomes, so an example cannot drift away from the behaviour it documents.
+
+```bash
+docker compose up -d
+./scripts/demo.sh
+```
+
+The script posts each file to the running service and prints the report the service answered
+with, then the row counts:
+
+```
+
+200  POST /clients/bulk   <- examples/clients-batch.json
+    2 records in the batch
+    created           2  ██
+    already_existed   0  
+    conflict          0  
+    failed            0  
+
+    #0  C-1    created          id=0ffba724  
+    #1  C-2    created          id=7e0d4e55  
+
+200  POST /clients/bulk   <- examples/clients-cosmetic-retry.json
+    2 records in the batch
+    created           0  
+    already_existed   2  ··
+    conflict          0  
+    failed            0  
+
+    #0  C-1    already_existed  id=0ffba724  
+    #1  C-2    already_existed  id=7e0d4e55  
+
+200  POST /clients/bulk   <- examples/clients-changed.json
+    1 record in the batch
+    created           0  
+    already_existed   0  
+    conflict          1  !
+    failed            0  
+
+    #0  C-1    conflict         id=0ffba724  payload_mismatch
+
+200  POST /clients/bulk   <- examples/clients-mixed.json
+    3 records in the batch
+    created           1  █
+    already_existed   1  ·
+    conflict          0  
+    failed            1  x
+
+    #0  C-9    created          id=54b3a7cb  
+    #1  C-10   failed           id=-         validation_error
+    #2  C-9    already_existed  id=54b3a7cb  
+
+200  POST /patients/bulk   <- examples/patients-batch.json
+    2 records in the batch
+    created           1  █
+    already_existed   0  
+    conflict          0  
+    failed            1  x
+
+    #0  P-1    created          id=dfac6128  
+    #1  P-2    failed           id=-         owner_not_found
+
+Totals in the database:
+  table   | count 
+----------+-------
+ clients  |     3
+ patients |     1
+(2 rows)
+```
+
+To run a single file instead:
+
+```bash
+docker compose exec -T app python /app/scripts/report.py examples/clients-batch.json /clients/bulk
+```
+
+`report.py` uses only the Python standard library, so it adds nothing to the image. It is a
+viewer for the real response, not a second implementation: every number it prints came from the
+service.
+
 ## Look at the data
 
 Query the database inside its container:
@@ -420,6 +521,7 @@ check-then-insert cannot be fixed with a lock in the handler, and why the negati
 | [`tests/api/test_patients_bulk.py`](tests/api/test_patients_bulk.py) | Owner resolution and the stored link; a missing owner fails alone; patient retries and conflicts; invalid records open no transaction; validation wins over a missing owner |
 | [`tests/concurrency/test_concurrent_duplicates.py`](tests/concurrency/test_concurrent_duplicates.py) | Ten workers, same batch: exactly one `created` per record, identical ids everywhere, one row each, five rounds. Overlapping batches in reverse order: no duplicates, no deadlock. Concurrent patients with the same `source_id` |
 | [`tests/concurrency/test_check_then_insert_is_a_race.py`](tests/concurrency/test_check_then_insert_is_a_race.py) | The negative control: without the constraint, check-then-insert really does create the duplicate. This is what makes the other concurrency test evidence instead of hope |
+| [`tests/api/test_examples.py`](tests/api/test_examples.py) | Posts every file in [`examples/`](examples) in order and asserts the documented outcome, so the examples cannot rot |
 | [`tests/test_health.py`](tests/test_health.py) | The service boots |
 
 Every test asserts the response **and** the database state, and the failing cases assert the
@@ -526,8 +628,9 @@ first commit that touches the application to the last file written.
 | README, ADRs, written answer, AI notes | 10-11 | 14:29 |
 | Fresh-clone verification, README finish, push | - | 14:30 - 14:45 |
 | README: the walkthrough above, with outputs from a clean stack | - | 15:05 - 15:15 |
+| Diagrams (Mermaid), `examples/`, the report script and its README section | - | 15:18 - 15:32 |
 
-**About 50 minutes of clock**, with an AI assistant as the pair. The brief allowed two hours; a
+**About 1 hour 8 minutes of clock**, with an AI assistant as the pair. The brief allowed two hours; a
 smaller thing that is correct and tested beat a bigger thing that is not.
 
 What that number does not include, because it happened before the session: the design work. The

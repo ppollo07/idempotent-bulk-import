@@ -1,0 +1,6 @@
+{
+  "records": [
+    {"source_id": "P-1", "name": "Luna", "species": "Dog", "date_of_birth": "2020-01-02", "owner_source_id": "C-1"},
+    {"source_id": "P-2", "name": "Michi", "species": "cat", "owner_source_id": "C-404"}
+  ]
+}
