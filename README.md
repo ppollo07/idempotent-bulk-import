@@ -342,8 +342,9 @@ docker compose up -d
 ./scripts/demo.sh
 ```
 
-The script posts each file to the running service and prints the report the service answered
-with, then the row counts:
+The script waits for `/health` to answer before the first request (`docker compose up -d`
+returns when the container starts, not when the app is listening), then posts each file and
+prints the report the service answered with, plus the row counts:
 
 ```
 

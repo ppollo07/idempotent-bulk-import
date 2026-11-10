@@ -17,9 +17,29 @@ compose() {
   fi
 }
 
+# `docker compose up -d` returns when the container starts, not when the app answers.
+wait_for_service() {
+  local url="${READY_URL:-http://localhost:8000/health}"
+  printf 'waiting for %s' "$url"
+  for _ in $(seq 1 "${READY_ATTEMPTS:-30}"); do
+    if curl -fsS "$url" >/dev/null 2>&1; then
+      echo
+      return 0
+    fi
+    printf '.'
+    sleep 1
+  done
+  echo
+  echo "the service is not answering at $url" >&2
+  echo "start it first:  docker compose up -d" >&2
+  exit 1
+}
+
 report() {
   compose exec -T app python /app/scripts/report.py "$1" "$2"
 }
+
+wait_for_service
 
 report examples/clients-batch.json /clients/bulk
 report examples/clients-cosmetic-retry.json /clients/bulk

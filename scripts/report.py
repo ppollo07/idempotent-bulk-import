@@ -9,11 +9,12 @@ Use `scripts/demo.sh` to run the whole scripted migration in order.
 """
 
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = os.environ.get("BULK_IMPORT_URL", "http://localhost:8000")
 STATUSES = ("created", "already_existed", "conflict", "failed")
 MARK = {"created": "█", "already_existed": "·", "conflict": "!", "failed": "x"}
 
@@ -30,6 +31,11 @@ def post(endpoint: str, payload: dict) -> tuple[int, dict]:
             return response.status, json.load(response)
     except urllib.error.HTTPError as error:
         return error.code, json.load(error)
+    except urllib.error.URLError as error:
+        raise SystemExit(
+            f"cannot reach {BASE_URL} ({error.reason}).\n"
+            "is the service running?  docker compose up -d"
+        ) from None
 
 
 def main() -> None:
