@@ -544,6 +544,39 @@ check-then-insert cannot be fixed with a lock in the handler, and why the negati
 Every test asserts the response **and** the database state, and the failing cases assert the
 `error.code` while the neighbours stay `created`.
 
+## Where this sits in an ETL pipeline
+
+A migration is extract, transform, load. This service is deliberately only the **load** step —
+the one where correctness is decided.
+
+| Step | In this repo? | Where the rest belongs |
+|---|---|---|
+| **Extract** | No | The migration tool. It reads the legacy system and decides what one record is. |
+| **Transform** | One slice: canonicalisation (`normalize.py`) | Field mapping per source system, business rules, enrichment and quarantine belong to the migration tool or a dedicated pipeline. |
+| **Load** | Yes, this is the whole service | — |
+
+The slice of transform that is here is the one that *has* to be here: "the same data" must be
+defined where the duplicate is compared, otherwise the sender and the receiver disagree about
+what a conflict is, and every delta becomes a manual reconciliation.
+
+### What is automated, and what stays a human on purpose
+
+| Automated | Why it had to be |
+|---|---|
+| Rerunning any batch, unattended | The retry is safe by construction, so nobody has to compare row counts after a failure. This is the precondition for automating a migration, not an optimisation on top of it. |
+| Cosmetic cleanup: whitespace, email case, date format | Without it every delta raises false conflicts, and a person reconciles them by hand. |
+| The per-record outcome | The caller gets the decision without diffing the database. |
+| The regression suite, including the negative control | The guarantee cannot silently disappear in a refactor. |
+
+| Left as judgement | Why |
+|---|---|
+| Deciding what a `conflict` means | It is a judgement about the source system: a real change goes through the update path, a data error goes back to the clinic. Automating it would mean guessing. |
+| Field mapping and record counts per source system | Owned by the pipeline that extracts. A reusable mapping per source system is exactly where migration 51 gets cheaper than migration 50. |
+| Throttling, run-level progress | Named as not built, on purpose. |
+
+The design line: **automate the repeatable, keep the judgement visible.** A conflict is visible
+so a person decides once, with data, instead of discovering a silent overwrite months later.
+
 ## How fast is it
 
 Measured on one laptop with the stack in this repository, a 1000-record batch:
