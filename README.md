@@ -103,23 +103,56 @@ pyproject.toml      ruff and pytest configuration
 
 ## One record, end to end
 
+```mermaid
+flowchart TD
+    A["record arrives inside a batch"] --> B{"envelope valid?"}
+    B -->|no| B1["422, nothing written"]
+    B -->|yes| C{"record parses and has required fields?"}
+    C -->|no| C1["failed: validation_error<br/>no transaction opened"]
+    C -->|yes| D["normalise and hash"]
+    D --> E{"patient whose owner_source_id does not resolve?"}
+    E -->|yes| F1["failed: owner_not_found"]
+    E -->|no| G
+    G["INSERT ... ON CONFLICT (source_id) DO NOTHING RETURNING id"] --> H{"row returned?"}
+    H -->|yes| H1["created"]
+    H -->|no| I["SELECT the committed row"]
+    I --> J{"same payload hash?"}
+    J -->|yes| J1["already_existed: original id"]
+    J -->|no| J2["conflict: payload_mismatch, original id"]
 ```
-record arrives
-  │
-  ├─ envelope valid?            no  → 422, nothing written
-  ├─ record parses?             no  → failed / validation_error, no transaction
-  ├─ required fields present?   no  → failed / validation_error, no transaction
-  ├─ normalise + hash           → one definition of "same data"
-  │
-  └─ one short transaction per record
-       ├─ patients only: resolve owner_source_id → failed / owner_not_found
-       ├─ INSERT ... ON CONFLICT (source_id) DO NOTHING RETURNING id
-       │    ├─ row returned            → created
-       │    └─ nothing returned        → SELECT the committed row
-       │           ├─ same hash        → already_existed (original id)
-       │           └─ different hash   → conflict / payload_mismatch (original id)
-       └─ commit
+
+One short transaction per record, so `created`, `already_existed`, `conflict` and `failed` are
+decided independently for every row in the batch.
+
+## Schema
+
+```mermaid
+erDiagram
+    CLIENTS ||--o{ PATIENTS : "owner_id"
+    CLIENTS {
+        uuid id PK
+        text source_id UK "legacy id, the dedup key"
+        text first_name
+        text last_name
+        text email "nullable, optional, never validated for format"
+        text payload_hash "sha256 of the normalised fields"
+        timestamptz created_at
+    }
+    PATIENTS {
+        uuid id PK
+        text source_id UK "legacy id, the dedup key"
+        text name
+        text species
+        date date_of_birth "nullable"
+        uuid owner_id FK "resolved from owner_source_id at write time"
+        text owner_source_id
+        text payload_hash "includes owner_source_id"
+        timestamptz created_at
+    }
 ```
+
+`UK` on `source_id` in both tables is the whole idempotency guarantee; `payload_hash` is what
+separates an identical retry from a changed record.
 
 ## API
 
@@ -351,6 +384,32 @@ Six decisions, one page each for the three that matter:
    workers sending the same batch in a different order cannot deadlock on it.
 6. **Validation runs before the database is touched**, so `validation_error` always wins over
    `owner_not_found` and an invalid record never opens a transaction.
+
+### Why two workers cannot duplicate a record
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant W1 as worker 1
+    participant W2 as worker 2
+    participant DB as PostgreSQL
+    W1->>DB: BEGIN (this record only)
+    W2->>DB: BEGIN (this record only)
+    W1->>DB: INSERT ... ON CONFLICT DO NOTHING RETURNING id
+    DB-->>W1: id 7f3a... (inserted)
+    W2->>DB: INSERT with the same source_id
+    Note over DB: worker 2 waits on the unique index<br/>until worker 1 commits or rolls back
+    W1->>DB: COMMIT
+    DB-->>W2: no row (DO NOTHING)
+    W2->>DB: SELECT id, payload_hash WHERE source_id = ...
+    DB-->>W2: id 7f3a...
+    Note over W2: same hash, so already_existed<br/>with the same id. No second row.
+    W2->>DB: COMMIT
+```
+
+The waiting is done by the unique index, not by application code: that is why a
+check-then-insert cannot be fixed with a lock in the handler, and why the negative control in
+[`tests/concurrency/`](tests/concurrency) produces a duplicate when the constraint is missing.
 
 ## Tests, and what each proves
 
