@@ -41,6 +41,10 @@ curl localhost:8000/health
 The service is on <http://localhost:8000>, with interactive docs at
 <http://localhost:8000/docs>. The schema is applied at startup (`CREATE TABLE IF NOT EXISTS`).
 
+If port 8000 is already in use on your machine, change one line in `compose.yaml`
+(`- "8080:8000"`) and use `localhost:8080`. Nothing else needs to change: the database port is
+never published, so a local PostgreSQL cannot clash with this stack.
+
 ## Test
 
 ```bash
@@ -406,6 +410,10 @@ Totals in the database:
 (2 rows)
 ```
 
+`docker compose down -v` removes the containers **and the data volume**, which is how to replay
+the demo from scratch. Without the `-v`, the next run answers `already_existed` instead of
+`created`, which is correct behaviour but not the documented flow.
+
 To run a single file instead:
 
 ```bash
@@ -536,6 +544,30 @@ check-then-insert cannot be fixed with a lock in the handler, and why the negati
 Every test asserts the response **and** the database state, and the failing cases assert the
 `error.code` while the neighbours stay `created`.
 
+## How fast is it
+
+Measured on one laptop with the stack in this repository, a 1000-record batch:
+
+| Request | Time | Throughput | What it does |
+|---|---|---|---|
+| first load, all new | 1.24 s | ~800 records/s | one `INSERT` and one commit per record |
+| the same batch again | 0.13 s | ~7,900 records/s | no writes: `DO NOTHING` returns nothing, then one `SELECT` per record |
+
+Two things worth reading out of that pair:
+
+- The per-record transaction costs one commit per record **when data is actually written**, and
+  nothing when it is not. A retry is cheap because it writes nothing at all.
+- A full replay is roughly ten times cheaper than the load, so a migration tool that resends a
+  batch after a timeout is not punished for it.
+
+For scale: 200,000 records is about four minutes of endpoint time on that laptop, and about
+25 seconds for a replay of the same load. A real migration's wall clock is dominated by
+extraction, profiling, validation and cutover — not by this service — which is the right place
+for the effort to go.
+
+Numbers like these move with hardware, `fsync` settings and pool size; the shape is what
+matters, and it is the shape that justifies one transaction per record.
+
 ## Considered and rejected
 
 The alternatives a reviewer usually asks about, and why they lost:
@@ -638,8 +670,9 @@ first commit that touches the application to the last file written.
 | Fresh-clone verification, README finish, push | - | 14:30 - 14:45 |
 | README: the walkthrough above, with outputs from a clean stack | - | 15:05 - 15:15 |
 | Diagrams (Mermaid), `examples/`, the report script and its README section | - | 15:18 - 15:32 |
+| Demo readiness fix, throughput measurement and the last README pass | - | 15:52 - 16:10 |
 
-**About 1 hour 8 minutes of clock**, with an AI assistant as the pair. The brief allowed two hours; a
+**About 1 hour 25 minutes of clock**, with an AI assistant as the pair. The brief allowed two hours; a
 smaller thing that is correct and tested beat a bigger thing that is not.
 
 What that number does not include, because it happened before the session: the design work. The
