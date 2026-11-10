@@ -17,12 +17,6 @@ MAX_TEXT_LENGTH = 200
 Status = Literal["created", "already_existed", "conflict", "failed"]
 
 
-class BulkRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    records: list[dict[str, Any]] = Field(min_length=1, max_length=MAX_RECORDS)
-
-
 class ClientIn(BaseModel):
     """One client as the migration tool sends it, before validation of its content."""
 
@@ -42,6 +36,55 @@ class PatientIn(BaseModel):
     species: str
     date_of_birth: date | None = None
     owner_source_id: str
+
+
+class ClientsRequest(BaseModel):
+    """The envelope for ``/clients/bulk``.
+
+    ``records`` is a list of loose objects that *document* a ``ClientIn``, but are not validated
+    as one here, on purpose: a record that does not parse must become a per-record ``failed``,
+    never a 422 for the whole batch. The union keeps the fields visible in ``/docs`` without
+    paying that cost.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    records: list[dict[str, Any] | ClientIn] = Field(
+        min_length=1,
+        max_length=MAX_RECORDS,
+        examples=[
+            [
+                {
+                    "source_id": "C-1",
+                    "first_name": "Ana",
+                    "last_name": "Ruiz",
+                    "email": "ana@example.com",
+                }
+            ]
+        ],
+    )
+
+
+class PatientsRequest(BaseModel):
+    """The envelope for ``/patients/bulk``. Same contract as ``ClientsRequest``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    records: list[dict[str, Any] | PatientIn] = Field(
+        min_length=1,
+        max_length=MAX_RECORDS,
+        examples=[
+            [
+                {
+                    "source_id": "P-1",
+                    "name": "Luna",
+                    "species": "dog",
+                    "date_of_birth": "2020-01-02",
+                    "owner_source_id": "C-1",
+                }
+            ]
+        ],
+    )
 
 
 class RecordError(BaseModel):

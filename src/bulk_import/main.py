@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 
 from . import db
 from .import_service import RecordResult, import_clients, import_patients
-from .schemas import BulkRequest, BulkResponse, BulkSummary, RecordResultOut
+from .schemas import BulkResponse, BulkSummary, ClientsRequest, PatientsRequest, RecordResultOut
 
 
 @asynccontextmanager
@@ -32,12 +32,12 @@ def health() -> dict[str, str]:
 
 
 @app.post("/clients/bulk")
-def bulk_clients(request: Request, body: BulkRequest) -> BulkResponse:
+def bulk_clients(request: Request, body: ClientsRequest) -> BulkResponse:
     return _response(import_clients(request.app.state.pool, body.records))
 
 
 @app.post("/patients/bulk")
-def bulk_patients(request: Request, body: BulkRequest) -> BulkResponse:
+def bulk_patients(request: Request, body: PatientsRequest) -> BulkResponse:
     return _response(import_patients(request.app.state.pool, body.records))
 
 
