@@ -1,4 +1,6 @@
 services:
+  # No published port on purpose: `up` must not fail because the reviewer's machine
+  # already runs something on 5432. Query it with `docker compose exec db psql ...`.
   db:
     image: postgres:16
     environment:
@@ -23,6 +25,8 @@ services:
     ports:
       - "8000:8000"
 
+  # Behind a profile, so `docker compose up` starts the service and not the test suite.
+  # `docker compose run --rm tests` still works, and that is the documented command.
   tests:
     profiles: ["test"]
     build: .

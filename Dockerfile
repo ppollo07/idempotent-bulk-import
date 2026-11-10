@@ -1,3 +1,5 @@
+# One image for the service and the tests. Dev dependencies are installed because the
+# reviewer runs `docker compose run --rm tests` in this same image.
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
