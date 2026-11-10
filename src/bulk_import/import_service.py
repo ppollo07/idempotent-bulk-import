@@ -16,6 +16,7 @@ Two consequences worth knowing while reading this file:
 """
 
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -58,11 +59,34 @@ class RecordResult:
 
 
 def import_clients(pool: ConnectionPool, records: list[dict[str, Any]]) -> list[RecordResult]:
-    return [_import_client(pool, index, raw) for index, raw in enumerate(records)]
+    results = [_import_client(pool, index, raw) for index, raw in enumerate(records)]
+    _log_batch("clients", results)
+    return results
 
 
 def import_patients(pool: ConnectionPool, records: list[dict[str, Any]]) -> list[RecordResult]:
-    return [_import_patient(pool, index, raw) for index, raw in enumerate(records)]
+    results = [_import_patient(pool, index, raw) for index, raw in enumerate(records)]
+    _log_batch("patients", results)
+    return results
+
+
+def _log_batch(entity: str, results: list[RecordResult]) -> None:
+    """One line per batch for the operator, one line per rejected record for the triage.
+
+    The response is for the caller. The log is for whoever has to answer "where did those 300
+    patients go?" a week later, when the response is long gone.
+    """
+    counts = Counter(result.status for result in results)
+    logger.info("%s batch of %d: %s", entity, len(results), dict(counts))
+    for result in results:
+        if result.status in ("failed", "conflict") and result.error is not None:
+            logger.warning(
+                "%s record %s: %s (%s)",
+                entity,
+                result.source_id,
+                result.error["code"],
+                result.error["message"],
+            )
 
 
 def _import_client(pool: ConnectionPool, index: int, raw: Any) -> RecordResult:

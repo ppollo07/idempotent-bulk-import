@@ -1,5 +1,8 @@
-"""HTTP entry point: the connection pool, the routes and the response shape."""
+"""HTTP entry point: logging, the connection pool, the routes and the response shape."""
 
+import logging
+import os
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -11,8 +14,23 @@ from .import_service import RecordResult, import_clients, import_patients
 from .schemas import BulkResponse, BulkSummary, ClientsRequest, PatientsRequest, RecordResultOut
 
 
+def configure_logging() -> None:
+    """Log from this package to stdout, at LOG_LEVEL, without touching the root logger.
+
+    Uvicorn configures its own loggers; a library or a test that imports this app must not get
+    its logging reconfigured as a side effect.
+    """
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(levelname)-8s %(name)s %(message)s"))
+    package_logger = logging.getLogger("bulk_import")
+    package_logger.setLevel(os.environ.get("LOG_LEVEL", "INFO").upper())
+    if not package_logger.handlers:
+        package_logger.addHandler(handler)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    configure_logging()
     pool = db.create_pool(db.database_url())
     pool.open(wait=True)
     db.apply_schema(pool)

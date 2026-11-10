@@ -51,7 +51,7 @@ never published, so a local PostgreSQL cannot clash with this stack.
 docker compose run --rm tests
 ```
 
-30 tests, about two seconds. To run one file or one test:
+31 tests, about two seconds. To run one file or one test:
 
 ```bash
 docker compose run --rm tests pytest tests/api -q          # the HTTP contract
@@ -84,6 +84,7 @@ Nothing to configure for the documented commands: `compose.yaml` sets the two va
 |---|---|---|
 | `DATABASE_URL` | the service | `postgresql://postgres:postgres@db:5432/bulk_import` |
 | `TEST_DATABASE_URL` | pytest | `postgresql://postgres:postgres@db:5432/bulk_import_test` |
+| `LOG_LEVEL` | the service | `INFO` |
 
 The database port is deliberately **not** published, so `docker compose up` cannot fail because
 something else on the machine already holds 5432. [Look at the data](#look-at-the-data) shows how
@@ -544,6 +545,7 @@ check-then-insert cannot be fixed with a lock in the handler, and why the negati
 | [`tests/concurrency/test_concurrent_duplicates.py`](tests/concurrency/test_concurrent_duplicates.py) | Ten workers, same batch: exactly one `created` per record, identical ids everywhere, one row each, five rounds. Overlapping batches in reverse order: no duplicates, no deadlock. Concurrent patients with the same `source_id` |
 | [`tests/concurrency/test_check_then_insert_is_a_race.py`](tests/concurrency/test_check_then_insert_is_a_race.py) | The negative control: without the constraint, check-then-insert really does create the duplicate. This is what makes the other concurrency test evidence instead of hope |
 | [`tests/api/test_examples.py`](tests/api/test_examples.py) | Posts every file in [`examples/`](examples) in order and asserts the documented outcome, so the examples cannot rot |
+| [`tests/test_logging.py`](tests/test_logging.py) | The operator gets a batch summary and one line per rejected record with the reason — the response is for the caller, the log is for the operator |
 | [`tests/test_health.py`](tests/test_health.py) | The service boots |
 
 Every test asserts the response **and** the database state, and the failing cases assert the
@@ -658,6 +660,12 @@ The brief asked for a line or two on each:
 Known limits, stated rather than hidden: no authentication, single tenant (`UNIQUE (source_id)`
 would become `UNIQUE (tenant_id, source_id)`), no read or update endpoints, the pool is a
 constant, and a pool timeout is not mapped to `503` yet.
+
+Logging goes to stdout as plain text: one `INFO` line per batch with the counts, one `WARNING`
+per record that was rejected or conflicted, with its `source_id` and error code. That is what an
+operator needs to answer "where did those 300 patients go?" a week later, when the response is
+long gone. It is not structured JSON and it is not aggregated: a run with thousands of conflicts
+would be noisy, and that is the first thing to fix when this runs for real.
 
 ## How I used AI
 
