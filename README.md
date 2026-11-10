@@ -58,6 +58,11 @@ docker compose run --rm tests pytest -k conflict -q        # by name
 The tests use a **separate database** on the same server (`bulk_import_test`), created by the
 test session and truncated between tests, so `docker compose up` data is never touched.
 
+The database log shows **one `duplicate key value violates unique constraint` ERROR** every time
+the suite runs. It is on purpose: `tests/api/test_clients_bulk.py` inserts the same `source_id`
+twice to assert that the constraint rejects it. It happens in `bulk_import_test`, never in
+`bulk_import`, and it is the only error the suite produces.
+
 The concurrency tests start a real uvicorn server on a free port and fire requests from real
 threads over sockets. `TestClient` calls the app in-process, so it cannot show two writers
 racing on the same rows: the race is in PostgreSQL, and the point of the test is that only a
