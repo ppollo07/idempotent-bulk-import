@@ -114,7 +114,11 @@ def _insert_client(pool: ConnectionPool, index: int, fields: dict[str, Any]) -> 
         if inserted is not None:
             return RecordResult(index, fields["source_id"], "created", inserted[0])
 
-        existing = _existing(conn, "clients", fields["source_id"])
+        existing = _existing(
+            conn,
+            "SELECT id::text, payload_hash FROM clients WHERE source_id = %s",
+            fields["source_id"],
+        )
 
     if existing is None:
         # The row was deleted between the insert attempt and the read: try once more.
@@ -159,7 +163,11 @@ def _insert_patient(pool: ConnectionPool, index: int, fields: dict[str, Any]) ->
         if inserted is not None:
             return RecordResult(index, fields["source_id"], "created", inserted[0])
 
-        existing = _existing(conn, "patients", fields["source_id"])
+        existing = _existing(
+            conn,
+            "SELECT id::text, payload_hash FROM patients WHERE source_id = %s",
+            fields["source_id"],
+        )
 
     if existing is None:
         return _insert_patient(pool, index, fields)
@@ -167,11 +175,9 @@ def _insert_patient(pool: ConnectionPool, index: int, fields: dict[str, Any]) ->
     return _settle(index, fields["source_id"], existing, digest)
 
 
-def _existing(conn: Connection, table: str, source_id: str) -> tuple[str, str] | None:
-    row = conn.execute(
-        f"SELECT id::text, payload_hash FROM {table} WHERE source_id = %s",  # noqa: S608
-        (source_id,),
-    ).fetchone()
+def _existing(conn: Connection, query: str, source_id: str) -> tuple[str, str] | None:
+    """The committed row for a record that was already there: id and stored hash."""
+    row = conn.execute(query, (source_id,)).fetchone()
     return (row[0], row[1]) if row is not None else None
 
 
