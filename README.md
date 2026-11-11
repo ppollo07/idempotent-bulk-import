@@ -128,6 +128,8 @@ Dockerfile          one image for the service and the tests, Python 3.12 slim
 pyproject.toml      ruff and pytest configuration
 ```
 
+---
+
 ## One record, end to end
 
 ```mermaid
@@ -213,6 +215,8 @@ this service cannot verify would block a migration for no gain.
 `422` is reserved for a malformed **envelope**: `records` missing, not a list, empty, or longer
 than 1000. A bad field inside a record is a per-record `failed`, so one broken row never rejects
 the other 999.
+
+---
 
 ## Verify it by hand
 
@@ -312,6 +316,8 @@ valid client:
 Step 6 rejects the whole request because the envelope is unusable; step 7 accepts it and reports
 the one bad record. That boundary is what makes per-record outcomes possible.
 
+[↑ Contents](#contents)
+
 ## Examples, and a scripted run
 
 The requests above also exist as files, so nobody has to retype JSON to try the service:
@@ -338,6 +344,9 @@ The script waits for `/health` to answer first (`up -d` returns when the contain
 the app is listening), then posts each file and prints the report the service answered with. The
 output below is trimmed — the failure lines are dropped from the first blocks — and the `<-` notes
 are mine, not the script's:
+
+<details>
+<summary>The full output of the scripted run</summary>
 
 ```
 200  POST /clients/bulk   <- examples/clients-batch.json
@@ -370,6 +379,8 @@ Totals in the database:
  patients |     1
 ```
 
+</details>
+
 (`down -v` removes the volume, which is how to replay the demo from scratch: without it the next
 run answers `already_existed` instead of `created`.)
 
@@ -381,6 +392,8 @@ docker compose exec -T app python /app/scripts/report.py examples/clients-batch.
 
 `report.py` uses only the Python standard library, so it adds nothing to the image. It is a viewer
 for the real response, not a second implementation: every number it prints came from the service.
+
+[↑ Contents](#contents)
 
 ## Look at the data
 
@@ -425,6 +438,10 @@ docker compose exec db psql -U postgres -d bulk_import \
 The patient points at its owner through `owner_id`, resolved from `owner_source_id` at write
 time. The interactive version is the same command without `-c`; `\d clients` then shows the
 `UNIQUE (source_id)` constraint this whole design rests on.
+
+[↑ Contents](#contents)
+
+---
 
 ## How it is correct
 
@@ -535,6 +552,8 @@ what a conflict is, and every delta becomes a manual reconciliation.
 
 The design line: **automate the repeatable, keep the judgement visible.** A conflict is visible
 so a person decides once, with data, instead of discovering a silent overwrite months later.
+
+---
 
 ## How fast is it
 
