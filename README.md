@@ -12,6 +12,18 @@ The design is deliberately short: one transaction per record, the idempotency gu
 database constraint, and every decision written down with the alternative it rejected. It is
 meant to be read in one sitting and defended line by line.
 
+## Contents
+
+**Start here** — [Run and test](#run-and-test) · [What was asked, and where it is](#what-was-asked-and-where-it-is) · [Repository map](#repository-map) · [Configuration](#configuration)
+
+**The contract** — [One record, end to end](#one-record-end-to-end) · [Schema](#schema) · [API](#api)
+
+**See it work** — [Verify it by hand](#verify-it-by-hand) · [Examples, and a scripted run](#examples-and-a-scripted-run) · [Look at the data](#look-at-the-data)
+
+**Why it is correct** — [How it is correct](#how-it-is-correct) · [Tests, and what each proves](#tests-and-what-each-proves) · [Where this sits in an ETL pipeline](#where-this-sits-in-an-etl-pipeline)
+
+**Context** — [How fast is it](#how-fast-is-it) · [Considered and rejected](#considered-and-rejected) · [Not built, deliberately](#not-built-deliberately) · [How I used AI](#how-i-used-ai) · [What I would do next](#what-i-would-do-next-and-what-i-cut) · [Time spent](#time-spent)
+
 ## What was asked, and where it is
 
 | Requirement | Where it lives |
@@ -22,12 +34,12 @@ meant to be read in one sitting and defended line by line.
 | A record resent with different data: decide and justify | [ADR 0002](docs/adr/0002-conflict-policy.md), [Verify 3-4](#verify-it-by-hand) |
 | Tests that prove it, including concurrent duplicates | [Tests, and what each proves](#tests-and-what-each-proves) |
 | The notification that happens after the write commits (written answer, no code) | [`docs/written-answer.md`](docs/written-answer.md) |
-| One command to start it, one to run the tests | [Run](#run), [Test](#test) |
+| One command to start it, one to run the tests | [Run and test](#run-and-test) |
 | How AI was used and what had to be corrected | [`docs/ai-usage.md`](docs/ai-usage.md) |
 | What I would do next, and what I cut | [What I would do next](#what-i-would-do-next-and-what-i-cut) |
 | Owners arriving late, throttling, multi-day progress reporting (one line each, not built) | [Not built, deliberately](#not-built-deliberately) |
 
-## Run
+## Run and test
 
 ```bash
 docker compose up --build
@@ -44,8 +56,6 @@ The service is on <http://localhost:8000>, with interactive docs at
 If port 8000 is already in use on your machine, change one line in `compose.yaml`
 (`- "8080:8000"`) and use `localhost:8080`. Nothing else needs to change: the database port is
 never published, so a local PostgreSQL cannot clash with this stack.
-
-## Test
 
 ```bash
 docker compose run --rm tests
@@ -206,12 +216,11 @@ the other 999.
 
 ## Verify it by hand
 
-Seven requests, in order, against a fresh `docker compose up`. Each one ends with the part of
-the answer that matters; ids are random per run. The same requests are also files in
-[`examples/`](examples), and [the section after this one](#examples-and-a-scripted-run) runs them
-for you.
+Seven requests, in order, against a fresh `docker compose up`. Ids are random per run, so the
+values below come from one real run. The same requests are files in [`examples/`](examples), and
+[the next section](#examples-and-a-scripted-run) runs them for you.
 
-**1. Create two clients.** One request, many records, one result each:
+**1. Create two clients** — one request, many records, one result each.
 
 ```bash
 curl -s -X POST localhost:8000/clients/bulk -H 'content-type: application/json' -d '{
@@ -223,59 +232,41 @@ curl -s -X POST localhost:8000/clients/bulk -H 'content-type: application/json' 
 ```
 
 ```json
-{
-  "summary": {"created": 2, "already_existed": 0, "conflict": 0, "failed": 0},
-  "results": [
-    {"index": 0, "source_id": "C-1", "status": "created",
-     "id": "41502587-aa5b-47c8-aa58-813bd58d0873", "error": null},
-    {"index": 1, "source_id": "C-2", "status": "created",
-     "id": "6f670e1f-b11b-445f-bc43-6c7cf07e604d", "error": null}
-  ]
-}
+{"summary": {"created": 2, "already_existed": 0, "conflict": 0, "failed": 0},
+ "results": [
+   {"index": 0, "source_id": "C-1", "status": "created", "id": "41502587...", "error": null},
+   {"index": 1, "source_id": "C-2", "status": "created", "id": "6f670e1f...", "error": null}]}
 ```
 
-**2. Send exactly the same body again.** A retry never duplicates and never changes the ids:
+**2. Send exactly the same body again** — a retry never duplicates and never changes the ids:
 
 ```json
-{
-  "summary": {"created": 0, "already_existed": 2, "conflict": 0, "failed": 0},
-  "results": [
-    {"index": 0, "source_id": "C-1", "status": "already_existed",
-     "id": "41502587-aa5b-47c8-aa58-813bd58d0873", "error": null},
-    {"index": 1, "source_id": "C-2", "status": "already_existed",
-     "id": "6f670e1f-b11b-445f-bc43-6c7cf07e604d", "error": null}
-  ]
-}
+{"summary": {"created": 0, "already_existed": 2, "conflict": 0, "failed": 0},
+ "results": [
+   {"index": 0, "source_id": "C-1", "status": "already_existed", "id": "41502587...", "error": null},
+   {"index": 1, "source_id": "C-2", "status": "already_existed", "id": "6f670e1f...", "error": null}]}
 ```
 
-**3. Change one field of `C-1`.** Same request with `"last_name": "Ruiz Gil"`:
+**3. Change one field of `C-1`** (`"last_name": "Ruiz Gil"`) — a conflict, and the row is untouched:
 
 ```json
-{
-  "summary": {"created": 0, "already_existed": 0, "conflict": 1, "failed": 0},
-  "results": [
-    {"index": 0, "source_id": "C-1", "status": "conflict",
-     "id": "41502587-aa5b-47c8-aa58-813bd58d0873",
-     "error": {"code": "payload_mismatch", "message": "source_id already exists with different data"}}
-  ]
-}
+{"summary": {"created": 0, "already_existed": 0, "conflict": 1, "failed": 0},
+ "results": [{"index": 0, "source_id": "C-1", "status": "conflict", "id": "41502587...",
+              "error": {"code": "payload_mismatch",
+                        "message": "source_id already exists with different data"}}]}
 ```
 
-The id is still the original one and the stored row was not touched: `last_name` is still
-`Ruiz`. A migration never gets a silent overwrite out of a replayed batch.
-
-**4. Change only the shape of the data, not the data.** `C-1` with `"source_id": " C-1 "`,
-`"first_name": "  Ana "` and `"email": " ANA@Example.com "`:
+**4. Change only the shape, not the data** — `" C-1 "`, `"  Ana "`, `" ANA@Example.com "`:
 
 ```json
 {"summary": {"created": 0, "already_existed": 1, "conflict": 0, "failed": 0},
  "results": [{"index": 0, "source_id": "C-1", "status": "already_existed",
-              "id": "41502587-aa5b-47c8-aa58-813bd58d0873", "error": null}]}
+              "id": "41502587...", "error": null}]}
 ```
 
-The hash is identical, so it is the same record. A delta run that re-exports whitespace or
-changes the case of an email does not produce a wall of false conflicts. This is the decision
-most worth arguing about in review, so it is a full page: [ADR 0002](docs/adr/0002-conflict-policy.md).
+Same hash, so it is the same record: a delta that re-exports whitespace does not raise a wall of
+conflicts. It is the decision most worth arguing about in review, so it has a full page:
+[ADR 0002](docs/adr/0002-conflict-policy.md).
 
 **5. Patients, one with a missing owner.**
 
@@ -290,45 +281,36 @@ curl -s -X POST localhost:8000/patients/bulk -H 'content-type: application/json'
 ```
 
 ```json
-{
-  "summary": {"created": 1, "already_existed": 0, "conflict": 0, "failed": 1},
-  "results": [
-    {"index": 0, "source_id": "P-1", "status": "created",
-     "id": "17c13ab7-8097-4857-88a5-bde0933e0fa1", "error": null},
-    {"index": 1, "source_id": "P-2", "status": "failed", "id": null,
-     "error": {"code": "owner_not_found", "message": "owner_source_id C-404 does not exist"}}
-  ]
-}
+{"summary": {"created": 1, "already_existed": 0, "conflict": 0, "failed": 1},
+ "results": [
+   {"index": 0, "source_id": "P-1", "status": "created", "id": "17c13ab7...", "error": null},
+   {"index": 1, "source_id": "P-2", "status": "failed", "id": null,
+    "error": {"code": "owner_not_found",
+              "message": "owner_source_id C-404 does not exist"}}]}
 ```
 
-`P-2` fails alone; `P-1` is written. Note `species` was sent as `Dog` and is stored as `dog`
-(lower-cased by normalisation, see the query below).
+`P-2` fails alone; `P-1` is written. `species` was sent as `Dog` and is stored as `dog`.
 
-**6. A malformed envelope is a 422, not a per-record failure.** `{"records": []}`:
+**6. A malformed envelope is a 422, not a per-record failure.** Send `{"records": []}`:
 
 ```json
 {"detail": [{"type": "too_short", "loc": ["body", "records"],
-             "msg": "List should have at least 1 item after validation, not 0",
-             "input": [], "ctx": {"field_type": "List", "min_length": 1, "actual_length": 0}}]}
+             "msg": "List should have at least 1 item after validation, not 0"}]}
 ```
 
-**7. A broken record inside a valid batch, for contrast.** One client with an empty
-`first_name` next to a valid one:
+**7. A broken record inside a valid batch, for contrast** — one empty `first_name` next to a
+valid client:
 
 ```json
-{
-  "summary": {"created": 1, "already_existed": 0, "conflict": 0, "failed": 1},
-  "results": [
-    {"index": 0, "source_id": "C-3", "status": "failed", "id": null,
-     "error": {"code": "validation_error", "message": "first_name is required"}},
-    {"index": 1, "source_id": "C-4", "status": "created",
-     "id": "da29abbc-4559-476c-a444-6b83d466c695", "error": null}
-  ]
-}
+{"summary": {"created": 1, "already_existed": 0, "conflict": 0, "failed": 1},
+ "results": [
+   {"index": 0, "source_id": "C-3", "status": "failed", "id": null,
+    "error": {"code": "validation_error", "message": "first_name is required"}},
+   {"index": 1, "source_id": "C-4", "status": "created", "id": "da29abbc...", "error": null}]}
 ```
 
-Step 6 rejects the whole request because the envelope is unusable; step 7 accepts the request
-and reports the one bad record. That boundary is what makes per-record outcomes possible.
+Step 6 rejects the whole request because the envelope is unusable; step 7 accepts it and reports
+the one bad record. That boundary is what makes per-record outcomes possible.
 
 ## Examples, and a scripted run
 
@@ -339,86 +321,57 @@ The requests above also exist as files, so nobody has to retype JSON to try the 
 | [`clients-batch.json`](examples/clients-batch.json) | the full load: two new clients |
 | [`clients-cosmetic-retry.json`](examples/clients-cosmetic-retry.json) | the same two with whitespace and email case changed: normalisation, same ids |
 | [`clients-changed.json`](examples/clients-changed.json) | one client with a different surname: a conflict, nothing overwritten |
-| [`clients-mixed.json`](examples/clients-mixed.json) | one valid, one invalid, and one duplicate source_id inside the same request |
+| [`clients-mixed.json`](examples/clients-mixed.json) | one valid, one invalid, and one duplicate `source_id` inside the same request |
 | [`patients-batch.json`](examples/patients-batch.json) | one patient whose owner exists, one whose owner does not |
 
 Responses are deliberately **not** committed as files: they contain generated UUIDs, so they
 would be wrong the next time anyone ran them. Instead
-[`tests/api/test_examples.py`](tests/api/test_examples.py) posts every file in the order below
-and asserts the outcomes, so an example cannot drift away from the behaviour it documents.
+[`tests/api/test_examples.py`](tests/api/test_examples.py) posts every file in the order below and
+asserts the outcomes, so an example cannot drift away from the behaviour it documents.
 
 ```bash
 docker compose up -d
 ./scripts/demo.sh
 ```
 
-The script waits for `/health` to answer before the first request (`docker compose up -d`
-returns when the container starts, not when the app is listening), then posts each file and
-prints the report the service answered with, plus the row counts:
+The script waits for `/health` to answer first (`up -d` returns when the container starts, not when
+the app is listening), then posts each file and prints the report the service answered with. The
+output below is trimmed — the failure lines are dropped from the first blocks — and the `<-` notes
+are mine, not the script's:
 
 ```
-
 200  POST /clients/bulk   <- examples/clients-batch.json
     2 records in the batch
     created           2  ██
-    already_existed   0  
-    conflict          0  
-    failed            0  
-
-    #0  C-1    created          id=0ffba724  
-    #1  C-2    created          id=7e0d4e55  
+    #0  C-1    created          id=0ffba724
+    #1  C-2    created          id=7e0d4e55
 
 200  POST /clients/bulk   <- examples/clients-cosmetic-retry.json
-    2 records in the batch
-    created           0  
-    already_existed   2  ··
-    conflict          0  
-    failed            0  
-
-    #0  C-1    already_existed  id=0ffba724  
-    #1  C-2    already_existed  id=7e0d4e55  
+    already_existed   2  ··          <- normalisation: same ids, nothing written
 
 200  POST /clients/bulk   <- examples/clients-changed.json
-    1 record in the batch
-    created           0  
-    already_existed   0  
-    conflict          1  !
-    failed            0  
-
-    #0  C-1    conflict         id=0ffba724  payload_mismatch
+    conflict          1  !           <- #0 C-1  payload_mismatch
 
 200  POST /clients/bulk   <- examples/clients-mixed.json
-    3 records in the batch
-    created           1  █
-    already_existed   1  ·
-    conflict          0  
-    failed            1  x
-
-    #0  C-9    created          id=54b3a7cb  
+    created 1  already_existed 1  failed 1
+    #0  C-9    created          id=54b3a7cb
     #1  C-10   failed           id=-         validation_error
-    #2  C-9    already_existed  id=54b3a7cb  
+    #2  C-9    already_existed  id=54b3a7cb    <- duplicate inside one request
 
 200  POST /patients/bulk   <- examples/patients-batch.json
-    2 records in the batch
-    created           1  █
-    already_existed   0  
-    conflict          0  
-    failed            1  x
-
-    #0  P-1    created          id=dfac6128  
+    created 1  failed 1
+    #0  P-1    created          id=dfac6128
     #1  P-2    failed           id=-         owner_not_found
 
 Totals in the database:
-  table   | count 
+  table   | count
 ----------+-------
  clients  |     3
  patients |     1
-(2 rows)
 ```
 
-`docker compose down -v` removes the containers **and the data volume**, which is how to replay
-the demo from scratch. Without the `-v`, the next run answers `already_existed` instead of
-`created`, which is correct behaviour but not the documented flow.
+(`down -v` removes the volume, which is how to replay the demo from scratch: without it the next
+run answers `already_existed` instead of `created`.)
 
 To run a single file instead:
 
@@ -426,9 +379,8 @@ To run a single file instead:
 docker compose exec -T app python /app/scripts/report.py examples/clients-batch.json /clients/bulk
 ```
 
-`report.py` uses only the Python standard library, so it adds nothing to the image. It is a
-viewer for the real response, not a second implementation: every number it prints came from the
-service.
+`report.py` uses only the Python standard library, so it adds nothing to the image. It is a viewer
+for the real response, not a second implementation: every number it prints came from the service.
 
 ## Look at the data
 
