@@ -185,24 +185,22 @@ def _insert_patient(pool: ConnectionPool, index: int, fields: dict[str, Any]) ->
 def _write_patient(
     pool: ConnectionPool, index: int, fields: dict[str, Any], digest: str
 ) -> RecordResult:
-    with pool.connection() as conn, conn.transaction():
-        owner = conn.execute(
-            "SELECT id::text FROM clients WHERE source_id = %s",
-            (fields["owner_source_id"],),
-        ).fetchone()
-        if owner is None:
-            return _failed(
-                index,
-                fields["source_id"],
-                "owner_not_found",
-                f"owner_source_id {fields['owner_source_id']} does not exist",
-            )
+    """Resolve the owner inside the insert, so an existing patient is settled first.
 
+    With the owner resolved up front, a resent patient whose new ``owner_source_id`` does not
+    exist answered ``owner_not_found`` even though the record was already there — the opposite of
+    what the conflict policy promises. An `INSERT ... SELECT` from ``clients`` returns no row when
+    the owner is missing, and no row either when the patient exists, so the follow-up read tells
+    the two cases apart in the right order.
+    """
+    with pool.connection() as conn, conn.transaction():
         inserted = conn.execute(
             """
             INSERT INTO patients
                 (source_id, name, species, date_of_birth, owner_id, owner_source_id, payload_hash)
-            VALUES (%s, %s, %s, %s, %s::uuid, %s, %s)
+            SELECT %s, %s, %s, %s, c.id, %s, %s
+            FROM clients c
+            WHERE c.source_id = %s
             ON CONFLICT (source_id) DO NOTHING
             RETURNING id::text
             """,
@@ -211,9 +209,9 @@ def _write_patient(
                 fields["name"],
                 fields["species"],
                 fields["date_of_birth"],
-                owner[0],
                 fields["owner_source_id"],
                 digest,
+                fields["owner_source_id"],
             ),
         ).fetchone()
         if inserted is not None:
@@ -225,10 +223,15 @@ def _write_patient(
             fields["source_id"],
         )
 
-    if existing is None:
-        return _insert_patient(pool, index, fields)
+    if existing is not None:
+        return _settle(index, fields["source_id"], existing, digest)
 
-    return _settle(index, fields["source_id"], existing, digest)
+    return _failed(
+        index,
+        fields["source_id"],
+        "owner_not_found",
+        f"owner_source_id {fields['owner_source_id']} does not exist",
+    )
 
 
 def _existing(conn: Connection, query: str, source_id: str) -> tuple[str, str] | None:

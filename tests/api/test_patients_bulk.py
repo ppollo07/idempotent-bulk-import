@@ -113,3 +113,24 @@ def test_validation_wins_over_a_missing_owner(clean_db, live_server) -> None:
 
     assert result["status"] == "failed"
     assert result["error"]["code"] == "validation_error"
+
+
+def test_an_existing_patient_with_a_new_unknown_owner_is_a_conflict(
+    clean_db, live_server
+) -> None:
+    """The record already exists, so the conflict policy wins over the owner lookup.
+
+    Resolving the owner first made a resent patient answer `owner_not_found` for a row that was
+    already stored, which contradicts what ADR 0002 promises for a changed record.
+    """
+    create_owners(live_server)
+    original = post(live_server, "/patients/bulk", PATIENTS[:1]).json()["results"][0]
+
+    moved = dict(PATIENTS[0], owner_source_id="C-404")
+    result = post(live_server, "/patients/bulk", [moved]).json()["results"][0]
+
+    assert result["status"] == "conflict"
+    assert result["id"] == original["id"]
+    assert result["error"]["code"] == "payload_mismatch"
+    assert count_patients(clean_db) == 1
+
