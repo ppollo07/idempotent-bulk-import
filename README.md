@@ -22,7 +22,7 @@ meant to be read in one sitting and defended line by line.
 
 **Why it is correct** — [How it is correct](#how-it-is-correct) · [Tests, and what each proves](#tests-and-what-each-proves) · [Where this sits in an ETL pipeline](#where-this-sits-in-an-etl-pipeline)
 
-**Context** — [How fast is it](#how-fast-is-it) · [Considered and rejected](#considered-and-rejected) · [Not built, deliberately](#not-built-deliberately) · [How I used AI](#how-i-used-ai) · [What I would do next](#what-i-would-do-next-and-what-i-cut) · [Time spent](#time-spent)
+**Context** — [How fast is it](#how-fast-is-it) · [Considered and rejected](#considered-and-rejected) · [Not built, deliberately](#not-built-deliberately) · [How I used AI](#how-i-used-ai) · [What I would do next](#what-i-would-do-next-and-what-i-cut) · [Time and scope](#time-and-scope)
 
 ## What was asked, and where it is
 
@@ -54,8 +54,9 @@ The service is on <http://localhost:8000>, with interactive docs at
 <http://localhost:8000/docs>. The schema is applied at startup (`CREATE TABLE IF NOT EXISTS`).
 
 If port 8000 is already in use on your machine, change one line in `compose.yaml`
-(`- "8080:8000"`) and use `localhost:8080`. Nothing else needs to change: the database port is
-never published, so a local PostgreSQL cannot clash with this stack.
+(`- "8080:8000"`) and use `localhost:8080`. For `scripts/demo.sh`, also export
+`READY_URL=http://localhost:8080/health`: the script polls the service before its first request.
+The database port is never published, so a local PostgreSQL cannot clash with this stack.
 
 ```bash
 docker compose run --rm tests
@@ -88,7 +89,8 @@ not happen once proves nothing.
 
 ## Configuration
 
-Nothing to configure for the documented commands: `compose.yaml` sets the two variables.
+Nothing to configure for the documented commands: `compose.yaml` sets all three variables, and
+`LOG_LEVEL` is also the code default.
 
 | Variable | Used by | Value in Compose |
 |---|---|---|
@@ -110,7 +112,7 @@ src/bulk_import/
   import_service.py the use case: one short transaction per record
   db.py             pool sizing, schema loading, no ORM
   schema.sql        clients, patients, and the UNIQUE constraints everything rests on
-examples/           the requests used in this README, as files a test also posts
+examples/           example payloads, each one posted and asserted by a test
 scripts/
   demo.sh           a scripted migration: five requests and the report for each
   report.py         prints one response as a report; standard library only
@@ -221,8 +223,9 @@ the other 999.
 ## Verify it by hand
 
 Seven requests, in order, against a fresh `docker compose up`. Ids are random per run, so the
-values below come from one real run. The same requests are files in [`examples/`](examples), and
-[the next section](#examples-and-a-scripted-run) runs them for you.
+values below come from one real run. Steps 1, 2, 3 and 5 are the files in [`examples/`](examples);
+steps 4, 6 and 7 are inline, because they exercise shapes the files do not cover. [The next
+section](#examples-and-a-scripted-run) runs the files for you.
 
 **1. Create two clients** — one request, many records, one result each.
 
@@ -517,8 +520,9 @@ check-then-insert cannot be fixed with a lock in the handler, and why the negati
 | [`tests/test_logging.py`](tests/test_logging.py) | The operator gets a batch summary and one line per rejected record with the reason — the response is for the caller, the log is for the operator |
 | [`tests/test_health.py`](tests/test_health.py) | The service boots |
 
-Every test asserts the response **and** the database state, and the failing cases assert the
-`error.code` while the neighbours stay `created`.
+The API tests assert both the response **and** the database state, and the failing cases assert
+the `error.code` while the neighbours stay `created`. The unit tests have no database, the logging
+test asserts log records, and the negative control asserts table state only.
 
 ## Where this sits in an ETL pipeline
 
@@ -598,14 +602,16 @@ The alternatives a reviewer usually asks about, and why they lost:
 - **One transaction for the whole batch**: no partial success, and two workers processing the
   same batch in a different order deadlock inside one long transaction. See
   [ADR 0003](docs/adr/0003-per-record-transaction.md).
-- **SQLite**: single writer, so a concurrent test proves little, and `RETURNING` with
-  `DO NOTHING` is documented only for PostgreSQL. Postgres gives row-level locking the
-  concurrency tests can actually exercise.
+- **SQLite**: it supports the same `INSERT ... ON CONFLICT DO NOTHING RETURNING`, and it also
+  returns no row for the conflicted insert, so the write path would carry over. Rejected because
+  it has a single writer: a concurrent test would prove very little, and the row-level locking
+  that this design relies on cannot be exercised. Postgres gives the concurrency tests something
+  real to race on.
 - **An ORM (Django or SQLAlchemy)**: would hide the constraint and the `ON CONFLICT` clause —
   exactly the two lines this design has to be judged on.
 - **Async handlers**: the concurrency that matters here lives in the database, not in the event
-  loop. Sync handlers plus a connection pool keep "one request, one connection" trivially true
-  and are easier to explain.
+  loop. Sync handlers plus a connection pool keep the connection story trivial — one checkout per
+  record, never a shared connection between threads — and are easier to explain.
 - **Hexagonal layers, ports and repository classes**: for a two-hour exercise they add surfaces
   to explain without adding a guarantee. The dependency direction is still one-way:
   routes → use case → normalisation/schema, with the database behind a function call. In Provet
@@ -670,30 +676,15 @@ Cut on purpose: the outbox publisher, CI, authentication, tenancy, read endpoint
 `pending_owner` table and a normalisation policy agreed with the migration team. Each one is
 described where it belongs instead of being half-built.
 
-## Time spent
+## Time and scope
 
-Honest numbers, because they were asked for. The clock below is the build session, from the
-first commit that touches the application to the last file written.
+I treated this as a two-hour exercise and stopped at the timebox. What I would do next, and what I
+deliberately did not build, are the two sections below.
 
-| Phase | Commits | Clock |
-|---|---|---|
-| Scaffold, Compose, health endpoint (before the clock) | 1-2 | 14:21 - 14:22 |
-| Schema, connection pool, schema loading | 3 | 14:24 |
-| Normalisation, hashing, unit tests | 4 | 14:25 |
-| Client bulk import, tests written first (red, then green) | 5-6 | 14:25 - 14:26 |
-| Concurrency tests, patient import and owner resolution | 7-8 | 14:26 - 14:27 |
-| Conflict policy, negative control, envelope contract | 9 | 14:28 |
-| README, ADRs, written answer, AI notes | 10-11 | 14:29 |
-| Fresh-clone verification, README finish, push | - | 14:30 - 14:45 |
-| README: the walkthrough above, with outputs from a clean stack | - | 15:05 - 15:15 |
-| Diagrams (Mermaid), `examples/`, the report script and its README section | - | 15:18 - 15:32 |
-| Demo readiness fix, throughput measurement and the last README pass | - | 15:52 - 16:10 |
+The design came first: deduplicating on the business key, a conflict instead of an overwrite, one
+transaction per record. Those decisions are the three ADRs; the implementation followed, with an AI
+assistant as the pair, and the corrections it needed are in [`docs/ai-usage.md`](docs/ai-usage.md).
 
-**About 1 hour 25 minutes of clock**, with an AI assistant as the pair. The brief allowed two hours; a
-smaller thing that is correct and tested beat a bigger thing that is not.
-
-What that number does not include, because it happened before the session: the design work. The
-choices that carry the exercise — natural key over request key, `conflict` over upsert,
-normalisation on ingress, one transaction per record, a negative control for the concurrency
-test — were written down and defended before a line of code existed. That is the part worth
-discussing in an interview; the code is short precisely because those were settled first.
+`v1.0.0` is what I delivered. Every commit after it — the record schema in `/docs`, structured
+logging, the README restructure — is a response to review feedback from colleagues, not part of the
+original delivery. `git log v1.0.0..main` is that conversation.

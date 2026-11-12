@@ -19,6 +19,7 @@ services:
     build: .
     environment:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/bulk_import
+      LOG_LEVEL: INFO
     depends_on:
       db:
         condition: service_healthy
