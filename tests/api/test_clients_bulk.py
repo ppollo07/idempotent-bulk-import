@@ -129,3 +129,26 @@ def test_the_unique_constraint_rejects_a_second_row_with_the_same_source_id(
     clean_db.rollback()
 
     assert count_clients(clean_db) == 1
+
+
+def test_a_control_character_fails_only_that_record(clean_db, live_server) -> None:
+    """A NUL byte or another control character is rejected, never silently stripped."""
+    nul = {"source_id": "C-9", "first_name": "a\u0000b", "last_name": "Roto"}
+    other = {"source_id": "C-10", "first_name": "a\x01b", "last_name": "Roto"}
+
+    response = post(live_server, [CLIENTS[0], nul, other, CLIENTS[1]])
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [result["status"] for result in body["results"]] == [
+        "created",
+        "failed",
+        "failed",
+        "created",
+    ]
+    assert [result["error"]["code"] for result in body["results"][1:3]] == [
+        "validation_error",
+        "validation_error",
+    ]
+    assert "control character" in body["results"][1]["error"]["message"]
+    assert count_clients(clean_db) == 2

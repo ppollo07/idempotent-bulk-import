@@ -16,11 +16,12 @@ Two consequences worth knowing while reading this file:
 """
 
 import logging
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
-from psycopg import Connection
+from psycopg import Connection, errors
 from psycopg_pool import ConnectionPool
 from pydantic import ValidationError
 
@@ -119,6 +120,18 @@ def _import_patient(pool: ConnectionPool, index: int, raw: Any) -> RecordResult:
 
 def _insert_client(pool: ConnectionPool, index: int, fields: dict[str, Any]) -> RecordResult:
     digest = payload_hash(fields)
+    try:
+        return _write_client(pool, index, fields, digest)
+    except errors.DataError as exc:
+        # The record itself is the problem (a NUL byte, a value PostgreSQL cannot store).
+        return _failed(index, fields["source_id"], "validation_error", _first_line(exc))
+    except errors.IntegrityError as exc:
+        return _failed(index, fields["source_id"], "database_error", _first_line(exc))
+
+
+def _write_client(
+    pool: ConnectionPool, index: int, fields: dict[str, Any], digest: str
+) -> RecordResult:
     with pool.connection() as conn, conn.transaction():
         inserted = conn.execute(
             """
@@ -153,6 +166,25 @@ def _insert_client(pool: ConnectionPool, index: int, fields: dict[str, Any]) -> 
 
 def _insert_patient(pool: ConnectionPool, index: int, fields: dict[str, Any]) -> RecordResult:
     digest = payload_hash(fields)
+    try:
+        return _write_patient(pool, index, fields, digest)
+    except errors.ForeignKeyViolation:
+        # The owner disappeared between the resolution and the insert.
+        return _failed(
+            index,
+            fields["source_id"],
+            "owner_not_found",
+            f"owner_source_id {fields['owner_source_id']} does not exist",
+        )
+    except errors.DataError as exc:
+        return _failed(index, fields["source_id"], "validation_error", _first_line(exc))
+    except errors.IntegrityError as exc:
+        return _failed(index, fields["source_id"], "database_error", _first_line(exc))
+
+
+def _write_patient(
+    pool: ConnectionPool, index: int, fields: dict[str, Any], digest: str
+) -> RecordResult:
     with pool.connection() as conn, conn.transaction():
         owner = conn.execute(
             "SELECT id::text FROM clients WHERE source_id = %s",
@@ -233,11 +265,18 @@ def _problem(
             return f"{name} is required"
         if len(value) > limit:
             return f"{name} is longer than {limit} characters"
+        if any(unicodedata.category(character) == "Cc" for character in value):
+            # Rejected, never stripped: silently changing a value contradicts ADR 0002.
+            return f"{name} contains a control character"
     return None
 
 
 def _failed(index: int, source_id: str | None, code: str, message: str) -> RecordResult:
     return RecordResult(index, source_id, "failed", None, {"code": code, "message": message})
+
+
+def _first_line(exc: Exception) -> str:
+    return str(exc).strip().splitlines()[0][:200] if str(exc).strip() else type(exc).__name__
 
 
 def _raw_source_id(raw: Any) -> str | None:
