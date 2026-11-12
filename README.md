@@ -9,8 +9,11 @@ Python 3.12, FastAPI, psycopg 3 with raw SQL, PostgreSQL 16, pytest. Everything 
 the only prerequisite is **Docker with the Compose plugin**.
 
 The design is deliberately short: one transaction per record, the idempotency guarantee in a
-database constraint, and every decision written down with the alternative it rejected. It is
-meant to be read in one sitting and defended line by line.
+database constraint, and every decision written down with the alternative it rejected.
+
+**Quick path:** `docker compose up --build` starts it on <http://localhost:8000>; `docker compose
+run --rm tests` runs 31 tests in about two seconds. Everything below is reproducible from a clean
+clone.
 
 ## Contents
 
@@ -448,36 +451,26 @@ time. The interactive version is the same command without `-c`; `\d clients` the
 
 ## How it is correct
 
-Six decisions, one page each for the three that matter:
+Six decisions. Three have a page of their own in [`docs/adr`](docs/adr); the rest are here because
+they have no ADR.
 
 1. **Deduplicate on the business key, enforced by the database**
-   ([ADR 0001](docs/adr/0001-dedup-on-source-id.md)). `UNIQUE (source_id)` +
-   `INSERT ... ON CONFLICT (source_id) DO NOTHING RETURNING id`. A request-level
-   `Idempotency-Key` would only protect one request: two workers, or a tool that rebuilds a
-   batch after a crash, send the same records under different keys and different batch
-   boundaries. Checking before inserting is a race; a `UNIQUE` constraint is not.
-   [`tests/concurrency/test_check_then_insert_is_a_race.py`](tests/concurrency/test_check_then_insert_is_a_race.py)
-   runs the naive version and produces the duplicate, so the claim is demonstrated rather than
-   asserted.
-2. **`ON CONFLICT DO NOTHING` returns no row** when the record already exists, so a second
-   `SELECT` fetches the committed row. It runs in `READ COMMITTED`, where every statement takes
-   a fresh snapshot and therefore sees the row the other worker committed a moment ago. Under
-   `REPEATABLE READ` that snapshot would be older and the row could be missed — the isolation
-   level is load-bearing, not incidental.
-3. **Resent with different data is a per-record `conflict`, never an overwrite**
-   ([ADR 0002](docs/adr/0002-conflict-policy.md)). A `payload_hash` (SHA-256 of the normalised
-   business fields) decides between `already_existed` and `conflict`. An overwrite is not safe
-   to retry: a late retry of an old batch would silently replace newer data and the result
-   would depend on arrival order. In a migration, a visible error beats a silent change.
-4. **Normalisation happens once, on ingress** ([`normalize.py`](src/bulk_import/normalize.py)).
-   Strings are Unicode NFC, trimmed, internal whitespace collapsed; `email` and `species` are
-   also lower-cased; dates are ISO; an absent optional field, `null` and `""` are the same data.
-   Nothing is fuzzy-matched: accents, synonyms and near-duplicates stay different, because a
-   `conflict` is the only signal that the source changed something. What is stored is what is
-   compared, so there is exactly one definition of "the same data".
-5. **One short transaction per record** ([ADR 0003](docs/adr/0003-per-record-transaction.md)).
-   Per-record outcomes come for free, one bad record cannot roll back the batch, and two
-   workers sending the same batch in a different order cannot deadlock on it.
+   ([ADR 0001](docs/adr/0001-dedup-on-source-id.md)): `UNIQUE (source_id)` +
+   `INSERT ... ON CONFLICT DO NOTHING RETURNING id`. Checking before inserting is a race; a
+   constraint is not — and
+   [`test_check_then_insert_is_a_race.py`](tests/concurrency/test_check_then_insert_is_a_race.py)
+   runs the naive version and produces the duplicate.
+2. **`ON CONFLICT DO NOTHING` returns no row**, so a second `SELECT` fetches the committed row. It
+   runs in `READ COMMITTED`, where every statement sees the latest committed data; under
+   `REPEATABLE READ` that read would miss the row the other worker just committed.
+3. **Resent with different data is a `conflict`, never an overwrite**
+   ([ADR 0002](docs/adr/0002-conflict-policy.md)). In a migration, a visible error beats a silent
+   change.
+4. **Normalisation defines "same data", once, on ingress**
+   ([`normalize.py`](src/bulk_import/normalize.py)): what is stored is what is compared.
+5. **One short transaction per record**
+   ([ADR 0003](docs/adr/0003-per-record-transaction.md)): per-record outcomes, no batch rollback,
+   and two workers in a different order cannot deadlock.
 6. **Validation runs before the database is touched**, so `validation_error` always wins over
    `owner_not_found` and an invalid record never opens a transaction.
 
@@ -593,15 +586,12 @@ The alternatives a reviewer usually asks about, and why they lost:
   guard to avoid rewriting, and it hides "we never modify an existing record" behind a no-op
   update. The extra `SELECT` reads instead of writing, and the constraint keeps saying what it
   means.
-- **A request-level `Idempotency-Key` header** (Stripe-style) protects one request. It cannot
-  dedupe two workers holding the same records under different keys, which is one of the three
-  failure modes in the brief. It is listed as a possible addition, never as the mechanism.
-- **Upsert / last-write-wins** for resent records: makes deltas work, but two workers with
-  stale and fresh data race, and an old batch can overwrite a clinic's post-cutover edits. See
-  [ADR 0002](docs/adr/0002-conflict-policy.md).
-- **One transaction for the whole batch**: no partial success, and two workers processing the
-  same batch in a different order deadlock inside one long transaction. See
-  [ADR 0003](docs/adr/0003-per-record-transaction.md).
+The three alternatives that already have an argument written down — a request-level
+`Idempotency-Key`, upsert, and one transaction per batch — are in
+[ADR 0001](docs/adr/0001-dedup-on-source-id.md),
+[ADR 0002](docs/adr/0002-conflict-policy.md) and
+[ADR 0003](docs/adr/0003-per-record-transaction.md). The rest:
+
 - **SQLite**: it supports the same `INSERT ... ON CONFLICT DO NOTHING RETURNING`, and it also
   returns no row for the conflicted insert, so the write path would carry over. Rejected because
   it has a single writer: a concurrent test would prove very little, and the row-level locking
@@ -658,23 +648,21 @@ are for.
 
 ## What I would do next, and what I cut
 
-Next, in order:
+What I would do next on the parts I did build, in order:
 
 1. **Versioned updates for delta runs.** A real delta changes data. Today a changed record is a
-   visible `conflict`; the production answer is an explicit update applied only when the legacy
+   visible `conflict`; the production answer is an update applied only when the legacy
    `source_updated_at` is newer than what we stored, so replay order stops mattering.
-2. **Transactional outbox.** Write the `client.created` event in the same transaction as the
-   row (see [`docs/written-answer.md`](docs/written-answer.md)), with a relay and an idempotent
-   consumer. That was the one stretch item I did not build.
-3. **Alembic instead of `schema.sql` at startup**, and a pool size read from configuration.
-4. **`429` + `Retry-After`, a bounded queue, and a `503` when the pool times out**, plus a
-   `runs` table with a progress endpoint.
-5. **An `Idempotency-Key` header** for callers that want the identical response replayed. It is
-   not the dedup mechanism, so it is not in the core.
+2. **Transactional outbox.** The event commits with the row; the relay and the idempotent consumer
+   are in [`docs/written-answer.md`](docs/written-answer.md). The one stretch item I did not build.
+3. **Alembic instead of `schema.sql` at startup**, a pool size read from configuration, and the
+   pool timeout mapped to `503`.
+4. **A `conflict` that names the fields that changed.** The columns are already stored, so it is a
+   comparison, not a schema change — and for the migration team it is worth much more than an
+   opaque `payload_mismatch`.
 
-Cut on purpose: the outbox publisher, CI, authentication, tenancy, read endpoints, metrics, a
-`pending_owner` table and a normalisation policy agreed with the migration team. Each one is
-described where it belongs instead of being half-built.
+Cut on purpose: everything in [Not built](#not-built-deliberately), plus CI, authentication,
+tenancy, read endpoints, metrics, and a normalisation policy agreed with the migration team.
 
 ## Time and scope
 
