@@ -226,9 +226,9 @@ the other 999.
 ## Verify it by hand
 
 Seven requests, in order, against a fresh `docker compose up`. Ids are random per run, so the
-values below come from one real run. Steps 1, 2, 3 and 5 are the files in [`examples/`](examples). Steps 4 and 7
-are the same shapes as `clients-cosmetic-retry.json` and `clients-mixed.json`, trimmed to one
-record each here; step 6, the empty envelope, has no file. [The next
+values below come from one real run. Steps 1, 2, 3 and 5 are the files in [`examples/`](examples). Steps 4 and 7 are the same shapes as
+`examples/clients-cosmetic-retry.json` and `examples/clients-mixed.json`, with fewer records here;
+step 6, the empty envelope, has no file. [The next
 section](#examples-and-a-scripted-run) runs the files for you.
 
 **1. Create two clients** — one request, many records, one result each.
@@ -514,8 +514,8 @@ check-then-insert cannot be fixed with a lock in the handler, and why the negati
 | [`tests/test_logging.py`](tests/test_logging.py) | The operator gets a batch summary and one line per rejected record with the reason — the response is for the caller, the log is for the operator |
 | [`tests/test_health.py`](tests/test_health.py) | The service boots |
 
-Tests assert what they are able to assert: the client tests check the response and the table, the
-single-record patient test checks the response only, the unit tests have no database, the logging
+Tests assert what they are able to assert: the client tests check the response and the table,
+`test_validation_wins_over_a_missing_owner` checks the response only, the unit tests have no database, the logging
 test asserts log records, and the negative control checks both workers' return values and the row
 count.
 
@@ -668,8 +668,9 @@ tenancy, read endpoints, metrics, and a normalisation policy agreed with the mig
 
 ## Time and scope
 
-I treated this as a two-hour exercise and stopped at the timebox. What I would do next, and what I
-deliberately did not build, are the two sections above this one.
+I treated this as a two-hour exercise and stopped at the timebox. What I would do next is in
+[What I would do next](#what-i-would-do-next-and-what-i-cut), and what I deliberately did not build
+is in [Not built, deliberately](#not-built-deliberately).
 
 The design came first: deduplicating on the business key, a conflict instead of an overwrite, one
 transaction per record. Those decisions are the three ADRs; the implementation followed, with an AI
