@@ -12,7 +12,7 @@ The design is deliberately short: one transaction per record, the idempotency gu
 database constraint, and every decision written down with the alternative it rejected.
 
 **Quick path:** `docker compose up --build` starts it on <http://localhost:8000>; `docker compose
-run --rm tests` runs 31 tests in about two seconds. Everything below is reproducible from a clean
+run --rm tests` runs 38 tests in about two seconds. Everything below is reproducible from a clean
 clone.
 
 ## Contents
@@ -54,7 +54,8 @@ curl localhost:8000/health
 ```
 
 The service is on <http://localhost:8000>, with interactive docs at
-<http://localhost:8000/docs>. The schema is applied at startup (`CREATE TABLE IF NOT EXISTS`).
+<http://localhost:8000/docs>. The schema is applied at startup under an advisory lock, so several instances can boot at once
+without racing on the catalog.
 
 If port 8000 is already in use on your machine, change one line in `compose.yaml`
 (`- "8080:8000"`) and use `localhost:8080`. For `scripts/demo.sh`, also export
@@ -65,7 +66,7 @@ The database port is never published, so a local PostgreSQL cannot clash with th
 docker compose run --rm tests
 ```
 
-31 tests, about two seconds. To run one file or one test:
+38 tests, about two seconds. To run one file or one test:
 
 ```bash
 docker compose run --rm tests pytest tests/api -q          # the HTTP contract
@@ -121,8 +122,12 @@ scripts/
   report.py         prints one response as a report; standard library only
 tests/
   unit/             normalisation and hashing, no database
-  api/              the HTTP contract: statuses, conflicts, 422 vs failed
+  api/              the HTTP contract: statuses, conflicts, 422 vs failed, 503 on an outage
   concurrency/      real server, real threads, plus the negative control
+  test_schema.py    the constraints and the index the design depends on
+  test_schema_startup.py  three instances applying the schema at the same time
+  test_logging.py   what the operator sees
+  test_health.py    the service boots
   conftest.py       test database, per-test cleanup, the live server fixture
 docs/
   adr/              the three decisions that carry the design, one page each
@@ -186,7 +191,9 @@ erDiagram
 ```
 
 `UK` on `source_id` in both tables is the whole idempotency guarantee; `payload_hash` is what
-separates an identical retry from a changed record.
+separates an identical retry from a changed record. `patients (owner_id)` carries its own index:
+PostgreSQL indexes the parent side of a foreign key, never the child, and both deleting a client and
+counting patients per owner read that column.
 
 ## API
 
@@ -452,8 +459,8 @@ time. The interactive version is the same command without `-c`; `\d clients` the
 
 ## How it is correct
 
-Six decisions. Three have a page of their own in [`docs/adr`](docs/adr); the rest are here because
-they have no ADR.
+Seven decisions. Four have a page of their own in [`docs/adr`](docs/adr); the rest are here
+because they have no ADR.
 
 1. **Deduplicate on the business key, enforced by the database**
    ([ADR 0001](docs/adr/0001-dedup-on-source-id.md)): `UNIQUE (source_id)` +
@@ -474,6 +481,11 @@ they have no ADR.
    and two workers in a different order cannot deadlock.
 6. **Validation runs before the database is touched**, so `validation_error` always wins over
    `owner_not_found` and an invalid record never opens a transaction.
+7. **An error belongs either to the record or to the connection**
+   ([ADR 0004](docs/adr/0004-error-ownership.md)). `DataError` and `IntegrityError` fail that
+   record; `OperationalError`, `InterfaceError` and a pool timeout answer `503` with no per-record
+   results, because claiming a record failed when the database was down is a lie. A control
+   character is rejected, never stripped.
 
 ### Why two workers cannot duplicate a record
 
@@ -512,6 +524,9 @@ check-then-insert cannot be fixed with a lock in the handler, and why the negati
 | [`tests/concurrency/test_check_then_insert_is_a_race.py`](tests/concurrency/test_check_then_insert_is_a_race.py) | The negative control: without the constraint, check-then-insert really does create the duplicate. This is what makes the other concurrency test evidence instead of hope |
 | [`tests/api/test_examples.py`](tests/api/test_examples.py) | Posts every file in [`examples/`](examples) in order and asserts the documented outcome, so the examples cannot rot |
 | [`tests/test_logging.py`](tests/test_logging.py) | The operator gets a batch summary and one line per rejected record with the reason — the response is for the caller, the log is for the operator |
+| [`tests/test_schema.py`](tests/test_schema.py) | `source_id` is unique on both tables, and `patients (owner_id)` is indexed |
+| [`tests/test_schema_startup.py`](tests/test_schema_startup.py) | Three instances applying the schema at the same time: no catalog race |
+| [`tests/api/test_database_outage.py`](tests/api/test_database_outage.py) | A connection failure is a `503` with no per-record results, not a thousand fake record failures |
 | [`tests/test_health.py`](tests/test_health.py) | The service boots |
 
 Tests assert what they are able to assert: the client tests check the response and the table,
@@ -628,7 +643,7 @@ The brief asked for a line or two on each:
 
 Known limits, stated rather than hidden: no authentication, single tenant (`UNIQUE (source_id)`
 would become `UNIQUE (tenant_id, source_id)`), no read or update endpoints, the pool is a
-constant, and a pool timeout is not mapped to `503` yet.
+constant.
 
 Logging goes to stdout as plain text: one `INFO` line per batch with the counts, one `WARNING`
 per record that was rejected or conflicted, with its `source_id` and error code. That is what an
