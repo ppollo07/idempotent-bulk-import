@@ -55,7 +55,12 @@ async def database_unavailable(request: Request, exc: Exception) -> JSONResponse
     logging.getLogger("bulk_import").error("database unavailable: %s", exc)
     return JSONResponse(
         status_code=503,
-        content={"detail": "database unavailable or saturated; retry the batch"},
+        content={
+            "detail": (
+                "database unavailable or saturated; the batch may be partially applied, "
+                "retry the batch"
+            )
+        },
     )
 
 

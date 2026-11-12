@@ -22,8 +22,11 @@ Two families, two answers:
 | `DataError`, `IntegrityError` (incl. `ForeignKeyViolation`) | the **record** | `failed` for that record, with a code that says which: `validation_error`, `owner_not_found`, `database_error` |
 | `OperationalError`, `InterfaceError`, `PoolTimeout` | the **connection** | `503`, no per-record results at all |
 
-`503` means "nothing is known about this batch; retry it". That is safe because the write path is
-idempotent: a retry returns `already_existed` for whatever had already committed.
+`503` means "this batch was interrupted": the records committed before the failure stay committed,
+and their ids were lost with the response. Retry it. That is safe because the write path is
+idempotent — the prefix comes back as `already_existed` with the same ids, and the rest is applied.
+"Nothing was attempted" would be the wrong thing to say, and it was said here until a reviewer
+pointed out that it cannot be true.
 
 Non-whitespace control characters (`NUL`, `0x01`…) are **rejected, never stripped**. Silently
 rewriting a value contradicts ADR 0002, and a NUL byte in a name is corrupted data, not cosmetic

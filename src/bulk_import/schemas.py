@@ -1,8 +1,12 @@
 """Request and response schemas.
 
 The envelope is validated as a whole: a body that is not ``{"records": [...]}`` with between
-1 and 1000 entries is rejected with 422 and nothing is written. Each record is validated
-separately, inside the use case, so that one bad record cannot reject the batch (S1).
+1 and 1000 entries is rejected with 422 and nothing is written. Each record's *fields* are
+validated separately, inside the use case, so that one bad field cannot reject the batch (S1).
+
+One boundary is deliberately not per-record: an element that is not an object at all (``null``,
+``"C-1"``, ``42``) matches neither branch of the union below, so it is an envelope error and the
+batch is rejected. Per-record outcomes need a record to report on.
 """
 
 from datetime import date
@@ -42,9 +46,10 @@ class ClientsRequest(BaseModel):
     """The envelope for ``/clients/bulk``.
 
     ``records`` is a list of loose objects that *document* a ``ClientIn``, but are not validated
-    as one here, on purpose: a record that does not parse must become a per-record ``failed``,
-    never a 422 for the whole batch. The union keeps the fields visible in ``/docs`` without
-    paying that cost.
+    as one here, on purpose: a record whose fields do not parse must become a per-record
+    ``failed``, never a 422 for the whole batch — except when the element is not an object, which
+    the union cannot accept and which therefore rejects the envelope. The union keeps the fields
+    visible in ``/docs`` without paying the per-field cost.
     """
 
     model_config = ConfigDict(extra="forbid")

@@ -26,7 +26,9 @@ with pool.connection() as conn, conn.transaction():
   different order inside one long transaction. Per-record transactions release each lock almost
   immediately, so the overlap never accumulates into a cycle. A test sends two overlapping
   batches in reverse order and requires two `200`s and zero duplicates.
-- **Failure blast radius.** A connection-level error costs one record, not the batch.
+- **Failure blast radius.** A connection-level error is *not* a record-level failure: it aborts
+  the request and answers `503`, because the batch may be partially applied and only a retry can
+  settle it. See [ADR 0004](0004-error-ownership.md).
 
 ## Consequences
 
