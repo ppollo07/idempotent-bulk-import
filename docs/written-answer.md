@@ -29,11 +29,15 @@ Delivery is **at least once**: the publisher can crash after the call but before
 and it will send again. That is the right side of the tradeoff — a duplicated email is
 recoverable, a lost one is not.
 
-## Why the duplicate email doesn't reach the customer
+## What the duplicate would cost, and where it is closed
 
 The event id travels with the call and the consumer deduplicates on it (idempotent consumer: it
-records processed event ids and discards repeats). The worst case is a repeated send, never a
-lost notification, and never two welcome emails.
+records processed event ids and discards repeats). That closes the common case, not every case:
+if the consumer **sends the email and crashes before recording the id**, the retry sends it again.
+Only the provider's own idempotency key — or a `sent_at` written before the send, which buys the
+opposite risk — closes that one, and it is a decision for whoever owns the notification service.
+So the honest claim is "a lost notification is impossible once the record commits; a duplicate is
+possible and bounded by the consumer's deduplication", not "two emails can never happen".
 
 ## What happens when the migration tool retries
 
@@ -47,4 +51,5 @@ If the call happens after the commit and fails, the only honest options are wors
 failure for data that was saved (and invite a retry that changes nothing), or swallow the error
 and lose the email. If the call moves inside the transaction instead, the notification service
 becomes part of the commit path, so its latency and availability decide whether a clinic can be
-migrated. The outbox keeps the two concerns independent while making the loss impossible.
+migrated. The outbox keeps the two concerns independent and makes the loss of the **event**
+impossible: once the record commits, the event commits with it. Delivery stays at-least-once.
