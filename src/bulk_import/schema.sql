@@ -25,3 +25,7 @@ CREATE TABLE IF NOT EXISTS patients (
     payload_hash text NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Postgres indexes the parent side of a foreign key, never the child. Without this, deleting a
+-- client or counting patients per owner reads the whole table.
+CREATE INDEX IF NOT EXISTS patients_owner_id_idx ON patients (owner_id);
