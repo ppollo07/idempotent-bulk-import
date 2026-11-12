@@ -115,9 +115,7 @@ def test_validation_wins_over_a_missing_owner(clean_db, live_server) -> None:
     assert result["error"]["code"] == "validation_error"
 
 
-def test_an_existing_patient_with_a_new_unknown_owner_is_a_conflict(
-    clean_db, live_server
-) -> None:
+def test_an_existing_patient_with_a_new_unknown_owner_is_a_conflict(clean_db, live_server) -> None:
     """The record already exists, so the conflict policy wins over the owner lookup.
 
     Resolving the owner first made a resent patient answer `owner_not_found` for a row that was
@@ -133,4 +131,3 @@ def test_an_existing_patient_with_a_new_unknown_owner_is_a_conflict(
     assert result["id"] == original["id"]
     assert result["error"]["code"] == "payload_mismatch"
     assert count_patients(clean_db) == 1
-

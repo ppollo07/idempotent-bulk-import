@@ -1,7 +1,6 @@
 """The schema itself: the constraints and indexes the design depends on."""
 
 
-
 def test_the_owner_foreign_key_is_indexed(clean_db) -> None:
     """Postgres indexes the parent side of a foreign key, never the child.
 
