@@ -25,9 +25,10 @@ Two families, two answers:
 `503` means "nothing is known about this batch; retry it". That is safe because the write path is
 idempotent: a retry returns `already_existed` for whatever had already committed.
 
-Control characters are **rejected, never stripped**. Silently rewriting a value contradicts
-ADR 0002, and a NUL byte in a name is corrupted data, not cosmetic noise. The `DataError` catch
-remains as the net for whatever validation cannot predict.
+Non-whitespace control characters (`NUL`, `0x01`…) are **rejected, never stripped**. Silently
+rewriting a value contradicts ADR 0002, and a NUL byte in a name is corrupted data, not cosmetic
+noise. Whitespace is the one thing normalisation does collapse, which is a separate rule. The
+`DataError` catch remains as the net for whatever validation cannot predict.
 
 ## Consequences
 

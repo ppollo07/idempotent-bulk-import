@@ -6,7 +6,8 @@ again, one after another or from ten workers at the same time, never creates a d
 always answers with the same ids.
 
 Python 3.12, FastAPI, psycopg 3 with raw SQL, PostgreSQL 16, pytest. Everything runs in Docker;
-the only prerequisite is **Docker with the Compose plugin**.
+the prerequisite is **Docker with the Compose plugin**, plus `curl` for `scripts/demo.sh` and
+`scripts/bench.sh`.
 
 The design is deliberately short: one transaction per record, the idempotency guarantee in a
 database constraint, and every decision written down with the alternative it rejected.
@@ -21,7 +22,7 @@ clone.
 
 **The contract** — [One record, end to end](#one-record-end-to-end) · [Schema](#schema) · [API](#api)
 
-**See it work** — [See it work](#see-it-work) · [Look at the data](#look-at-the-data)
+**The demo** — [See it work](#see-it-work) · [Look at the data](#look-at-the-data)
 
 **Why it is correct** — [How it is correct](#how-it-is-correct) · [Tests, and what each proves](#tests-and-what-each-proves) · [Where this sits in an ETL pipeline](#where-this-sits-in-an-etl-pipeline)
 
@@ -52,8 +53,8 @@ docker compose run --rm tests
 The service is on <http://localhost:8000>, with interactive docs at `/docs`. The schema is applied at
 startup under an advisory lock, so several instances can boot at once without racing on the catalog.
 
-38 tests, about two seconds; add `pytest tests/api` (or `tests/concurrency`, or `-k conflict`) to run
-a subset. They use a **separate database** on the same server, created by the test session and
+38 tests, about two seconds. For a subset, prefix the same command:
+`docker compose run --rm tests pytest tests/api` (or `tests/concurrency`, or `-k conflict`). They use a **separate database** on the same server, created by the test session and
 truncated between tests, so `docker compose up` data is never touched. The database log shows one
 `duplicate key` ERROR per run on purpose — it is the test that asserts the constraint — and the one
 warning comes from inside Starlette's `TestClient`, not from this code.
@@ -194,9 +195,11 @@ bounded length, `date_of_birth` parseable as `YYYY-MM-DD`, `owner_source_id` res
 format is **not** validated — the field is optional, and failing a real client over an address
 this service cannot verify would block a migration for no gain.
 
-`422` is reserved for a malformed **envelope**: `records` missing, not a list, empty, or longer
-than 1000. A bad field inside a record is a per-record `failed`, so one broken row never rejects
-the other 999.
+`422` is reserved for a malformed **envelope**: `records` missing, not a list, empty, longer than
+1000, or containing something that is not an object at all (`null`, `"C-1"`, `42`). A bad *field*
+inside a record is a per-record `failed`, so one broken row never rejects the other 999; an element
+that is not an object cannot be reported per record, and that is the one boundary where the batch is
+rejected.
 
 ---
 
@@ -244,8 +247,8 @@ curl -s -X POST localhost:8000/patients/bulk -H 'content-type: application/json'
               "message": "owner_source_id C-404 does not exist"}}]}
 ```
 
-**3. The same batch again, a changed record, and a cosmetic change.** These are files, and a test
-asserts every one of them:
+**3. The same batch again, a changed record, and a cosmetic change** — all of them files, each one
+asserted by [`tests/api/test_examples.py`](tests/api/test_examples.py):
 
 | File | What it demonstrates |
 |---|---|
@@ -280,33 +283,26 @@ row counts. `down -v` removes the volume, which is how to replay the demo from s
 
 </details>
 
-**4. The three cases the files do not cover.** An empty envelope is a `422`; a broken record beside a
-valid one is a per-record `failed`; a NUL byte is a per-record `validation_error` with the batch
-answering `200`.
+**4. The two cases no file covers.** An empty envelope is a `422`; a NUL byte is a per-record
+`validation_error` with the batch answering `200`. (A broken record beside a valid one is
+`clients-mixed.json` in the table above.)
 
 ```json
 {"detail": [{"type": "too_short", "loc": ["body", "records"],
              "msg": "List should have at least 1 item after validation, not 0"}]}
 ```
 
-```json
-{"summary": {"created": 1, "already_existed": 0, "conflict": 0, "failed": 1},
- "results": [
-   {"index": 0, "source_id": "C-3", "status": "failed", "id": null,
-    "error": {"code": "validation_error", "message": "first_name is required"}},
-   {"index": 1, "source_id": "C-4", "status": "created", "id": "da29abbc...", "error": null}]}
-```
-
-The cosmetic retry in the table is the decision most worth arguing about, so it has a full page:
-[ADR 0002](docs/adr/0002-conflict-policy.md).
+The cosmetic retry in the table — `"  Ana "` answering `already_existed` — is the decision most
+worth arguing about, so it has a full page: [ADR 0002](docs/adr/0002-conflict-policy.md).
 
 ## Look at the data
 
 The database port is not published, so query it inside the container:
 
 ```bash
-docker compose exec db psql -U postgres -d bulk_import \
-  -c 'select source_id, first_name, email, left(payload_hash, 12) as hash from clients'
+docker compose exec db psql -U postgres -d bulk_import -c \
+  "select source_id, first_name, email, left(payload_hash, 12) as hash from clients
+   where source_id in ('C-1', 'C-2') order by source_id"
 ```
 
 ```
@@ -348,8 +344,9 @@ because they have no ADR.
 7. **An error belongs either to the record or to the connection**
    ([ADR 0004](docs/adr/0004-error-ownership.md)). `DataError` and `IntegrityError` fail that
    record; `OperationalError`, `InterfaceError` and a pool timeout answer `503` with no per-record
-   results, because claiming a record failed when the database was down is a lie. A control
-   character is rejected, never stripped.
+   results, because claiming a record failed when the database was down is a lie. A non-whitespace
+   control character (`NUL`, `0x01`…) is rejected, never stripped; whitespace is collapsed by
+   normalisation, which is a different rule and documented in ADR 0002.
 
 ### Why two workers cannot duplicate a record
 
@@ -413,10 +410,11 @@ where the next migration gets cheaper. Automate the repeatable, keep the judgeme
 
 ## How fast is it
 
-Measured on one laptop with the stack in this repository: a 1000-record batch takes **1.24 s**
-(~800 records/s) the first time, and **0.13 s** (~7,900 records/s) sent again — the retry writes
-nothing, so it costs a tenth. At that rate 200,000 records is about four minutes of endpoint time,
-25 seconds for a replay.
+Reproduce it with `./scripts/bench.sh`, which posts a 1000-record batch twice and times both.
+Measured on one laptop with the stack in this repository: a 1000-record batch takes **about 1.3 s**
+(~800 records/s) the first time, and **0.13 s** (~8,000) sent again — the retry writes nothing, so it
+costs a tenth. At that rate 200,000 records is about four minutes of endpoint time, 25 seconds for a
+replay.
 
 Numbers move with hardware and `fsync` settings; the shape is the point, and the shape is what
 justifies one transaction per record. A real migration's wall clock is dominated by extraction,
@@ -433,10 +431,8 @@ The alternatives a reviewer usually asks about, and why they lost:
   update. The extra `SELECT` reads instead of writing, and the constraint keeps saying what it
   means.
 
-The three alternatives that already have an argument written down — a request-level
-`Idempotency-Key`, upsert, and one transaction per batch — are in
-[ADR 0001](docs/adr/0001-dedup-on-source-id.md),
-[ADR 0002](docs/adr/0002-conflict-policy.md) and
+Two alternatives have a page of their own: a request-level `Idempotency-Key` in
+[ADR 0001](docs/adr/0001-dedup-on-source-id.md) and one transaction per batch in
 [ADR 0003](docs/adr/0003-per-record-transaction.md). The rest:
 
 - **SQLite**: it supports the same `INSERT ... ON CONFLICT DO NOTHING RETURNING`, and it also
@@ -502,8 +498,8 @@ What I would do next, in order:
    comparison, not a schema change — and for the migration team it is worth much more than an
    opaque `payload_mismatch`.
 
-Cut on purpose: everything in [Not built](#not-built-deliberately), plus CI, authentication,
-tenancy, read endpoints, metrics, and a normalisation policy agreed with the migration team.
+Cut on purpose: everything in [Not built](#not-built-deliberately), plus CI, metrics, and a
+normalisation policy agreed with the migration team.
 
 ## Time and scope
 
@@ -511,8 +507,11 @@ I treated this as a two-hour exercise and stopped at the timebox: what I would d
 [here](#what-i-would-do-next-and-what-i-cut), and what I deliberately did not build is
 [here](#not-built-deliberately).
 
-The design came first — the four ADRs — and the implementation followed with an AI assistant as the
-pair; the corrections it needed are in [`docs/ai-usage.md`](docs/ai-usage.md). `v1.0.0` is what I
-delivered. Every commit after it comes from review feedback: the record schema in `/docs`, structured
-logging, the README restructure, and five fixes the findings produced. `git log v1.0.0..main` is
-that conversation.
+The design came first — deduplicating on the business key, a conflict instead of an overwrite, one
+transaction per record — and the ADRs are where those decisions live. ADR 0004 is the exception: it
+records a decision the review provoked, not one I had before writing code.
+
+`v1.0.0` is what I delivered. Every commit after it comes from review feedback, and
+`git log v1.0.0..main` is that conversation: the record schema in `/docs`, structured logging, the
+README restructure, and the fixes the findings produced — error ownership, the patient
+settle-before-resolve order, the owner index, the schema lock and a deterministic negative control.
