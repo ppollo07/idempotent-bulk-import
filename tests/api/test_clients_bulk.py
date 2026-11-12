@@ -152,3 +152,17 @@ def test_a_control_character_fails_only_that_record(clean_db, live_server) -> No
     ]
     assert "control character" in body["results"][1]["error"]["message"]
     assert count_clients(clean_db) == 2
+
+
+def test_an_element_that_is_not_an_object_rejects_the_envelope(clean_db, live_server) -> None:
+    """The one boundary where the batch itself is rejected.
+
+    A per-record outcome needs a record to report on. An element that is not an object cannot be
+    reported per record, so it is an envelope error — and the README says so.
+    """
+    for bad_element in (None, "C-1", 42):
+        response = post(live_server, [CLIENTS[0], bad_element])
+
+        assert response.status_code == 422, bad_element
+
+    assert count_clients(clean_db) == 0
