@@ -1,6 +1,5 @@
 """The schema itself: the constraints and indexes the design depends on."""
 
-import psycopg
 
 
 def test_the_owner_foreign_key_is_indexed(clean_db) -> None:

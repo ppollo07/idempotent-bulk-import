@@ -11,7 +11,6 @@ from urllib.parse import urlsplit, urlunsplit
 
 import psycopg
 import pytest
-from psycopg_pool import ConnectionPool
 
 from bulk_import import db
 
