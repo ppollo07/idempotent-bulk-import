@@ -41,3 +41,26 @@ assistant was wrong and how it got caught.
   the isolation level matters.
 - That the negative control produces a duplicate: a concurrency test that cannot fail is not
   evidence.
+
+## After the delivery: review passes over my own artifact
+
+`v1.0.0` is what I produced inside the timebox. Everything after it came from review passes over
+that artifact, and two of them were run by review agents: two blind, independent passes over the same
+frozen state, with me merging the findings and fixing only what both confirmed. That is what the
+`judgment` commits in the history are.
+
+It is also the part of the exercise I would keep if I had to choose one, because the passes found
+things I had written and never verified:
+
+- a docstring in the negative control asserting a determinism its code did not have — the barrier was
+  passed in and never awaited (`d841646`);
+- a time table that `git log` refuted, removed and replaced by what the tag actually proves;
+- ADR 0003 claiming that a connection error costs one record, while ADR 0004 and the code answered
+  `503` for the whole batch (`4381321`);
+- a `503` message saying "nothing is known about this batch" when a prefix of it may already be
+  committed, now `7022a41`: a test that fails on the third record of five and asserts that the first
+  two stayed in the database and come back as `already_existed` on the retry.
+
+Each of those is a class of defect, not a typo: a claim that reads as verified and was not. The
+mechanism that catches them is cheap — a second reader who did not write the code — and the reason to
+write it down here is that the same mechanism is what I would put in front of a migration team.
