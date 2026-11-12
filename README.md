@@ -21,7 +21,7 @@ clone.
 
 **The contract** — [One record, end to end](#one-record-end-to-end) · [Schema](#schema) · [API](#api)
 
-**See it work** — [Verify it by hand](#verify-it-by-hand) · [Examples, and a scripted run](#examples-and-a-scripted-run) · [Look at the data](#look-at-the-data)
+**See it work** — [See it work](#see-it-work) · [Look at the data](#look-at-the-data)
 
 **Why it is correct** — [How it is correct](#how-it-is-correct) · [Tests, and what each proves](#tests-and-what-each-proves) · [Where this sits in an ETL pipeline](#where-this-sits-in-an-etl-pipeline)
 
@@ -31,10 +31,10 @@ clone.
 
 | Requirement | Where it lives |
 |---|---|
-| One request carries many records; the answer says per record whether it was created, already existed or failed, and why | [API](#api), [Verify 1-2](#verify-it-by-hand) |
-| A patient points at its owner; a missing owner fails that record only | [Verify 5](#verify-it-by-hand) |
+| One request carries many records; the answer says per record whether it was created, already existed or failed, and why | [API](#api), [See it work](#see-it-work) |
+| A patient points at its owner; a missing owner fails that record only | [See it work](#see-it-work) |
 | Retrying is always safe, sequentially or concurrently, with the same ids | [ADR 0001](docs/adr/0001-dedup-on-source-id.md), [`tests/concurrency/`](tests/concurrency) |
-| A record resent with different data: decide and justify | [ADR 0002](docs/adr/0002-conflict-policy.md), [Verify 3-4](#verify-it-by-hand) |
+| A record resent with different data: decide and justify | [ADR 0002](docs/adr/0002-conflict-policy.md), [See it work](#see-it-work) |
 | Tests that prove it, including concurrent duplicates | [Tests, and what each proves](#tests-and-what-each-proves) |
 | The notification that happens after the write commits (written answer, no code) | [`docs/written-answer.md`](docs/written-answer.md) |
 | One command to start it, one to run the tests | [Run and test](#run-and-test) |
@@ -45,51 +45,24 @@ clone.
 ## Run and test
 
 ```bash
-docker compose up --build
-```
-
-```bash
-curl localhost:8000/health
-# {"status":"ok"}
-```
-
-The service is on <http://localhost:8000>, with interactive docs at
-<http://localhost:8000/docs>. The schema is applied at startup under an advisory lock, so several instances can boot at once
-without racing on the catalog.
-
-If port 8000 is already in use on your machine, change one line in `compose.yaml`
-(`- "8080:8000"`) and use `localhost:8080`. For `scripts/demo.sh`, also export
-`READY_URL=http://localhost:8080/health`: the script polls the service before its first request.
-The database port is never published, so a local PostgreSQL cannot clash with this stack.
-
-```bash
+docker compose up --build    # then: curl localhost:8000/health  ->  {"status":"ok"}
 docker compose run --rm tests
 ```
 
-38 tests, about two seconds. To run one file or one test:
+The service is on <http://localhost:8000>, with interactive docs at `/docs`. The schema is applied at
+startup under an advisory lock, so several instances can boot at once without racing on the catalog.
 
-```bash
-docker compose run --rm tests pytest tests/api -q          # the HTTP contract
-docker compose run --rm tests pytest tests/concurrency -q  # the races
-docker compose run --rm tests pytest -k conflict -q        # by name
-```
+38 tests, about two seconds; add `pytest tests/api` (or `tests/concurrency`, or `-k conflict`) to run
+a subset. They use a **separate database** on the same server, created by the test session and
+truncated between tests, so `docker compose up` data is never touched. The database log shows one
+`duplicate key` ERROR per run on purpose — it is the test that asserts the constraint — and the one
+warning comes from inside Starlette's `TestClient`, not from this code.
 
-The tests use a **separate database** on the same server (`bulk_import_test`), created by the
-test session and truncated between tests, so `docker compose up` data is never touched.
+The concurrency tests start a real uvicorn server and fire from real threads over sockets:
+`TestClient` runs the app in-process, so it cannot show two writers racing on the same rows.
 
-The database log shows **one `duplicate key value violates unique constraint` ERROR** every time
-the suite runs. It is on purpose: `tests/api/test_clients_bulk.py` inserts the same `source_id`
-twice to assert that the constraint rejects it. It happens in `bulk_import_test`, never in
-`bulk_import`, and it is the only error the suite produces. The single warning left comes from
-inside Starlette's `TestClient` (`anyio.abc.BlockingPortal` alias deprecation), not from this
-code; `requirements.txt` installs plain `uvicorn` rather than `uvicorn[standard]`, because the
-service has no websockets, no `--reload` and no need for `uvloop`.
-
-The concurrency tests start a real uvicorn server on a free port and fire requests from real
-threads over sockets. `TestClient` calls the app in-process, so it cannot show two writers
-racing on the same rows: the race is in PostgreSQL, and the point of the test is that only a
-`UNIQUE` constraint closes it. The duplicate test repeats five rounds, because a race that did
-not happen once proves nothing.
+If port 8000 is taken, remap it in `compose.yaml` and export
+`READY_URL=http://localhost:8080/health` for `scripts/demo.sh`. The database port is never published.
 
 ## Configuration
 
@@ -227,13 +200,9 @@ the other 999.
 
 ---
 
-## Verify it by hand
+## See it work
 
-Seven requests, in order, against a fresh `docker compose up`. Ids are random per run, so the
-values below come from one real run. Files cover steps 1 and 3 (`clients-batch.json`, `clients-changed.json`), step 4 (the first record
-of `clients-cosmetic-retry.json`) and step 5 (`patients-batch.json`); step 2 is step 1 sent again.
-Steps 6 and 7 are inline: no file carries an empty envelope or a broken record beside a valid one.
-[The next section](#examples-and-a-scripted-run) runs the files for you.
+Everything below runs against a fresh `docker compose up`; ids are random per run.
 
 **1. Create two clients** — one request, many records, one result each.
 
@@ -253,37 +222,8 @@ curl -s -X POST localhost:8000/clients/bulk -H 'content-type: application/json' 
    {"index": 1, "source_id": "C-2", "status": "created", "id": "6f670e1f...", "error": null}]}
 ```
 
-**2. Send exactly the same body again** — a retry never duplicates and never changes the ids:
-
-```json
-{"summary": {"created": 0, "already_existed": 2, "conflict": 0, "failed": 0},
- "results": [
-   {"index": 0, "source_id": "C-1", "status": "already_existed", "id": "41502587...", "error": null},
-   {"index": 1, "source_id": "C-2", "status": "already_existed", "id": "6f670e1f...", "error": null}]}
-```
-
-**3. Change one field of `C-1`** (`"last_name": "Ruiz Gil"`) — a conflict, and the row is untouched:
-
-```json
-{"summary": {"created": 0, "already_existed": 0, "conflict": 1, "failed": 0},
- "results": [{"index": 0, "source_id": "C-1", "status": "conflict", "id": "41502587...",
-              "error": {"code": "payload_mismatch",
-                        "message": "source_id already exists with different data"}}]}
-```
-
-**4. Change only the shape, not the data** — `" C-1 "`, `"  Ana "`, `" ANA@Example.com "`:
-
-```json
-{"summary": {"created": 0, "already_existed": 1, "conflict": 0, "failed": 0},
- "results": [{"index": 0, "source_id": "C-1", "status": "already_existed",
-              "id": "41502587...", "error": null}]}
-```
-
-Same hash, so it is the same record: a delta that re-exports whitespace does not raise a wall of
-conflicts. It is the decision most worth arguing about in review, so it has a full page:
-[ADR 0002](docs/adr/0002-conflict-policy.md).
-
-**5. Patients, one with a missing owner.**
+**2. Patients, one with a missing owner.** `P-2` fails alone, `P-1` is written, and `species` sent as
+`Dog` is stored as `dog`.
 
 ```bash
 curl -s -X POST localhost:8000/patients/bulk -H 'content-type: application/json' -d '{
@@ -304,57 +244,20 @@ curl -s -X POST localhost:8000/patients/bulk -H 'content-type: application/json'
               "message": "owner_source_id C-404 does not exist"}}]}
 ```
 
-`P-2` fails alone; `P-1` is written. `species` was sent as `Dog` and is stored as `dog`.
-
-**6. A malformed envelope is a 422, not a per-record failure.** Send `{"records": []}`:
-
-```json
-{"detail": [{"type": "too_short", "loc": ["body", "records"],
-             "msg": "List should have at least 1 item after validation, not 0"}]}
-```
-
-**7. A broken record inside a valid batch, for contrast** — one empty `first_name` next to a
-valid client:
-
-```json
-{"summary": {"created": 1, "already_existed": 0, "conflict": 0, "failed": 1},
- "results": [
-   {"index": 0, "source_id": "C-3", "status": "failed", "id": null,
-    "error": {"code": "validation_error", "message": "first_name is required"}},
-   {"index": 1, "source_id": "C-4", "status": "created", "id": "da29abbc...", "error": null}]}
-```
-
-Step 6 rejects the whole request because the envelope is unusable; step 7 accepts it and reports
-the one bad record. That boundary is what makes per-record outcomes possible.
-
-[↑ Contents](#contents)
-
-## Examples, and a scripted run
-
-Most of the requests above also exist as files, so nobody has to retype JSON to try the service:
+**3. The same batch again, a changed record, and a cosmetic change.** These are files, and a test
+asserts every one of them:
 
 | File | What it demonstrates |
 |---|---|
 | [`clients-batch.json`](examples/clients-batch.json) | the full load: two new clients |
-| [`clients-cosmetic-retry.json`](examples/clients-cosmetic-retry.json) | the same two with whitespace and email case changed: normalisation, same ids |
-| [`clients-changed.json`](examples/clients-changed.json) | one client with a different surname: a conflict, nothing overwritten |
-| [`clients-mixed.json`](examples/clients-mixed.json) | one valid, one invalid, and one duplicate `source_id` inside the same request |
+| [`clients-cosmetic-retry.json`](examples/clients-cosmetic-retry.json) | the same two with whitespace and email case changed: `already_existed`, same ids |
+| [`clients-changed.json`](examples/clients-changed.json) | one changed surname: `conflict`, nothing overwritten |
+| [`clients-mixed.json`](examples/clients-mixed.json) | one valid, one invalid, one duplicate `source_id` in the same request |
 | [`patients-batch.json`](examples/patients-batch.json) | one patient whose owner exists, one whose owner does not |
 
-Responses are deliberately **not** committed as files: they contain generated UUIDs, so they
-would be wrong the next time anyone ran them. Instead
-[`tests/api/test_examples.py`](tests/api/test_examples.py) posts every file in the order below and
-asserts the outcomes, so an example cannot drift away from the behaviour it documents.
-
 ```bash
-docker compose up -d
-./scripts/demo.sh
+docker compose up -d && ./scripts/demo.sh
 ```
-
-The script waits for `/health` to answer first (`up -d` returns when the container starts, not when
-the app is listening), then posts each file and prints the report the service answered with. The
-output below is trimmed — the failure lines are dropped from the first blocks — and the `<-` notes
-are mine, not the script's:
 
 <details>
 <summary>What the script prints for one of the five requests</summary>
@@ -372,72 +275,51 @@ are mine, not the script's:
     #2  C-9    already_existed  id=54b3a7cb
 ```
 
-That is verbatim for this request; the other four print the same shape, and the script ends with the
-row counts.
+That is verbatim for this request; the other four print the same shape and the script ends with the
+row counts. `down -v` removes the volume, which is how to replay the demo from scratch.
 
 </details>
 
-(`down -v` removes the volume, which is how to replay the demo from scratch: without it the next
-run answers `already_existed` instead of `created`.)
+**4. The three cases the files do not cover.** An empty envelope is a `422`; a broken record beside a
+valid one is a per-record `failed`; a NUL byte is a per-record `validation_error` with the batch
+answering `200`.
 
-To run a single file instead:
-
-```bash
-docker compose exec -T app python /app/scripts/report.py examples/clients-batch.json /clients/bulk
+```json
+{"detail": [{"type": "too_short", "loc": ["body", "records"],
+             "msg": "List should have at least 1 item after validation, not 0"}]}
 ```
 
-`report.py` uses only the Python standard library, so it adds nothing to the image. It is a viewer
-for the real response, not a second implementation: every number it prints came from the service.
+```json
+{"summary": {"created": 1, "already_existed": 0, "conflict": 0, "failed": 1},
+ "results": [
+   {"index": 0, "source_id": "C-3", "status": "failed", "id": null,
+    "error": {"code": "validation_error", "message": "first_name is required"}},
+   {"index": 1, "source_id": "C-4", "status": "created", "id": "da29abbc...", "error": null}]}
+```
 
-[↑ Contents](#contents)
+The cosmetic retry in the table is the decision most worth arguing about, so it has a full page:
+[ADR 0002](docs/adr/0002-conflict-policy.md).
 
 ## Look at the data
 
-Query the database inside its container:
-
-```bash
-docker compose exec db psql -U postgres -d bulk_import -c '\dt'
-```
-
-```
- public | clients  | table | postgres
- public | patients | table | postgres
-```
+The database port is not published, so query it inside the container:
 
 ```bash
 docker compose exec db psql -U postgres -d bulk_import \
-  -c 'select source_id, first_name, last_name, email, left(payload_hash, 12) as hash from clients order by source_id'
+  -c 'select source_id, first_name, email, left(payload_hash, 12) as hash from clients'
 ```
 
 ```
- source_id | first_name | last_name |      email      |     hash
------------+------------+-----------+-----------------+--------------
- C-1       | Ana        | Ruiz      | ana@example.com | 3590e3be1b81
- C-2       | Luis       | Paz      |                 | a6c4bf19e452
- C-4       | Marta      | Gil      |                 | cd1b6dbda869
+ source_id | first_name |      email      |     hash
+-----------+------------+-----------------+--------------
+ C-1       | Ana        | ana@example.com | 3590e3be1b81
+ C-2       | Luis       |                 | a6c4bf19e452
 ```
 
-`C-3` is absent: it failed validation and no transaction was opened for it. `C-1` is still
-`Ana` / `Ruiz` after the conflict attempt in step 3.
-
-```bash
-docker compose exec db psql -U postgres -d bulk_import \
-  -c 'select p.source_id, p.species, c.source_id as owner from patients p join clients c on c.id = p.owner_id order by 1'
-```
-
-```
- source_id | species | owner
------------+---------+-------
- P-1       | dog     | C-1
-```
-
-The patient points at its owner through `owner_id`, resolved from `owner_source_id` at write
-time. The interactive version is the same command without `-c`; `\d clients` then shows the
-`UNIQUE (source_id)` constraint this whole design rests on.
-
-[↑ Contents](#contents)
-
----
+`C-1` is still `Ana` after the conflict attempt, and its hash has not moved: the stored values are
+the first version and the hash is what an incoming record is compared against. `\d clients` shows
+the `UNIQUE (source_id)` constraint; `scripts/demo.sh` ends with the row counts; and
+[`tests/test_schema.py`](tests/test_schema.py) pins the constraints and the `owner_id` index.
 
 ## How it is correct
 
@@ -518,62 +400,27 @@ count.
 
 ## Where this sits in an ETL pipeline
 
-A migration is extract, transform, load. This service is deliberately only the **load** step —
-the one where correctness is decided.
+A migration is extract, transform, load, and this service is deliberately only the **load** step —
+the one where correctness is decided. Extraction and the field mapping per source system belong to
+the migration tool. The one slice of transform here is canonicalisation
+([`normalize.py`](src/bulk_import/normalize.py)), because "the same data" must be defined where the
+duplicate is compared.
 
-| Step | In this repo? | Where the rest belongs |
-|---|---|---|
-| **Extract** | No | The migration tool. It reads the legacy system and decides what one record is. |
-| **Transform** | One slice: canonicalisation (`normalize.py`) | Field mapping per source system, business rules, enrichment and quarantine belong to the migration tool or a dedicated pipeline. |
-| **Load** | Yes, this is the whole service | — |
-
-The slice of transform that is here is the one that *has* to be here: "the same data" must be
-defined where the duplicate is compared, otherwise the sender and the receiver disagree about
-what a conflict is, and every delta becomes a manual reconciliation.
-
-### What is automated, and what stays a human on purpose
-
-| Automated | Why it had to be |
-|---|---|
-| Rerunning any batch, unattended | The retry is safe by construction, so nobody has to compare row counts after a failure. This is the precondition for automating a migration, not an optimisation on top of it. |
-| Cosmetic cleanup: whitespace, email case, date format | Without it every delta raises false conflicts, and a person reconciles them by hand. |
-| The per-record outcome | The caller gets the decision without diffing the database. |
-| The regression suite, including the negative control | The guarantee cannot silently disappear in a refactor. |
-
-| Left as judgement | Why |
-|---|---|
-| Deciding what a `conflict` means | It is a judgement about the source system: a real change goes through the update path, a data error goes back to the clinic. Automating it would mean guessing. |
-| Field mapping and record counts per source system | Owned by the pipeline that extracts. A reusable mapping per source system is exactly where migration 51 gets cheaper than migration 50. |
-| Throttling, run-level progress | Named as not built, on purpose. |
-
-The design line: **automate the repeatable, keep the judgement visible.** A conflict is visible
-so a person decides once, with data, instead of discovering a silent overwrite months later.
-
----
+Automated: rerunning any batch unattended, the cosmetic cleanup, the per-record outcome, and the
+regression suite. Left as judgement: what a `conflict` means — a real change goes through the update
+path, a data error goes back to the clinic — and the mapping per source system, which is exactly
+where the next migration gets cheaper. Automate the repeatable, keep the judgement visible.
 
 ## How fast is it
 
-Measured on one laptop with the stack in this repository, a 1000-record batch:
+Measured on one laptop with the stack in this repository: a 1000-record batch takes **1.24 s**
+(~800 records/s) the first time, and **0.13 s** (~7,900 records/s) sent again — the retry writes
+nothing, so it costs a tenth. At that rate 200,000 records is about four minutes of endpoint time,
+25 seconds for a replay.
 
-| Request | Time | Throughput | What it does |
-|---|---|---|---|
-| first load, all new | 1.24 s | ~800 records/s | one `INSERT` and one commit per record |
-| the same batch again | 0.13 s | ~7,900 records/s | no writes: `DO NOTHING` returns nothing, then one `SELECT` per record |
-
-Two things worth reading out of that pair:
-
-- The per-record transaction costs one commit per record **when data is actually written**, and
-  nothing when it is not. A retry is cheap because it writes nothing at all.
-- A full replay is roughly ten times cheaper than the load, so a migration tool that resends a
-  batch after a timeout is not punished for it.
-
-For scale: 200,000 records is about four minutes of endpoint time on that laptop, and about
-25 seconds for a replay of the same load. A real migration's wall clock is dominated by
-extraction, profiling, validation and cutover — not by this service — which is the right place
-for the effort to go.
-
-Numbers like these move with hardware, `fsync` settings and pool size; the shape is what
-matters, and it is the shape that justifies one transaction per record.
+Numbers move with hardware and `fsync` settings; the shape is the point, and the shape is what
+justifies one transaction per record. A real migration's wall clock is dominated by extraction,
+validation and cutover, not by this service.
 
 ## Considered and rejected
 
@@ -613,27 +460,21 @@ The three alternatives that already have an argument written down — a request-
 The brief asked for a line or two on each:
 
 - **Owners arriving after their patients, or in the same request.** Park the patient in a
-  `pending_owner` table keyed by `owner_source_id` and retry the resolution when the owner
-  arrives (or at the end of the run), instead of failing it. The batch contract would not
-  change; only the record's disposition would move from `failed` to `pending`.
-- **Throttling the migration tool when the service is overloaded.** Answer `429` with
-  `Retry-After` when the pool or the database is saturated, and keep a bounded queue: a
-  migration tool that retries with backoff is the cheapest rate limiter there is. Today a
-  saturated pool already answers `503`, so the tool retries; what is missing is the advice on
-  *when* to come back.
-- **Reporting progress across a run that takes days.** A `runs` table with a row per run and
-  per-record outcomes, plus `GET /runs/{id}` returning counts by status and the first failures.
-  The per-record results already carry everything such a report needs.
+  `pending_owner` table keyed by `owner_source_id` and resolve it when the owner arrives; only the
+  record's disposition changes, from `failed` to `pending`.
+- **Throttling the migration tool.** Answer `429` with `Retry-After` when the pool is saturated and
+  keep a bounded queue. Today it already answers `503`, so the tool retries; what is missing is the
+  advice on *when*.
+- **Reporting progress across a run that takes days.** A `runs` table with a row per run and the
+  per-record outcomes, plus `GET /runs/{id}`. The per-record results already carry that data.
 
 Known limits, stated rather than hidden: no authentication, single tenant (`UNIQUE (source_id)`
-would become `UNIQUE (tenant_id, source_id)`), no read or update endpoints, the pool is a
-constant.
+would become `UNIQUE (tenant_id, source_id)`), no read or update endpoints, the pool is a constant.
 
-Logging goes to stdout as plain text: one `INFO` line per batch with the counts, one `WARNING`
-per record that was rejected or conflicted, with its `source_id` and error code. That is what an
-operator needs to answer "where did those 300 patients go?" a week later, when the response is
-long gone. It is not structured JSON and it is not aggregated: a run with thousands of conflicts
-would be noisy, and that is the first thing to fix when this runs for real.
+Logging goes to stdout as plain text: one `INFO` per batch and one `WARNING` per rejected or
+conflicting record, with its `source_id` and code. That is what an operator needs to answer "where
+did those 300 patients go?" a week later; it is not structured JSON and it is not aggregated, which
+is the first thing to fix when this runs for real.
 
 ## How I used AI
 
@@ -666,16 +507,12 @@ tenancy, read endpoints, metrics, and a normalisation policy agreed with the mig
 
 ## Time and scope
 
-I treated this as a two-hour exercise and stopped at the timebox. What I would do next is in
-[What I would do next](#what-i-would-do-next-and-what-i-cut), and what I deliberately did not build
-is in [Not built, deliberately](#not-built-deliberately).
+I treated this as a two-hour exercise and stopped at the timebox: what I would do next is
+[here](#what-i-would-do-next-and-what-i-cut), and what I deliberately did not build is
+[here](#not-built-deliberately).
 
-The design came first: deduplicating on the business key, a conflict instead of an overwrite, one
-transaction per record. Those decisions are the four ADRs; the implementation followed, with an AI
-assistant as the pair, and the corrections it needed are in [`docs/ai-usage.md`](docs/ai-usage.md).
-
-`v1.0.0` is what I delivered. Every commit after it comes from review feedback: the record schema in
-`/docs`, structured logging, the README restructure, and five fixes the findings produced — error
-ownership (`503` versus a failed record), the patient settle-before-resolve order, the owner index,
-the schema lock, and a deterministic negative control. `git log v1.0.0..main` is that conversation,
-and the diff between the tag and `main` is what changed because of it.
+The design came first — the four ADRs — and the implementation followed with an AI assistant as the
+pair; the corrections it needed are in [`docs/ai-usage.md`](docs/ai-usage.md). `v1.0.0` is what I
+delivered. Every commit after it comes from review feedback: the record schema in `/docs`, structured
+logging, the README restructure, and five fixes the findings produced. `git log v1.0.0..main` is
+that conversation.
