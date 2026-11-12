@@ -5,9 +5,9 @@ check-then-insert really does create duplicates when two workers race, with no U
 constraint to lose the race for them. Without this test, "the constraint is what makes it
 safe" is a claim; with it, it is a demonstrated fact.
 
-It is deterministic on purpose: both workers agree at a barrier, both read, both wait, then
-both write. The wait stands in for the window a real implementation has between the check
-and the insert.
+It is deterministic on purpose: the barrier sits *between* the check and the insert, so both
+workers are guaranteed to have read "nothing" before either of them writes. Without it the race
+is a timing coincidence, and a test that passes most of the time proves most of nothing.
 """
 
 import threading
@@ -15,8 +15,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 import psycopg
 import pytest
-
-WINDOW_SECONDS = 0.3
 
 CREATE_SCRATCH = """
 CREATE TABLE race_scratch (
@@ -35,7 +33,8 @@ def naive_import(database_url: str, barrier: threading.Barrier, source_id: str) 
         ).fetchone()
         if existing is not None:
             return "already_existed"
-        conn.execute("SELECT pg_sleep(%s)", (WINDOW_SECONDS,))
+        # Both workers have read "nothing"; neither may write until both are here.
+        barrier.wait(timeout=30)
         conn.execute(
             "INSERT INTO race_scratch (source_id, first_name, last_name) VALUES (%s, %s, %s)",
             (source_id, "Ana", "Ruiz"),
