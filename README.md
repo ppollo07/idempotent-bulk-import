@@ -13,7 +13,7 @@ The design is deliberately short: one transaction per record, the idempotency gu
 database constraint, and every decision written down with the alternative it rejected.
 
 **Quick path:** `docker compose up --build` starts it on <http://localhost:8000>; `docker compose
-run --rm tests` runs 38 tests in about two seconds. Everything below is reproducible from a clean
+run --rm tests` runs 40 tests in about two seconds. Everything below is reproducible from a clean
 clone.
 
 ## Contents
@@ -53,7 +53,7 @@ docker compose run --rm tests
 The service is on <http://localhost:8000>, with interactive docs at `/docs`. The schema is applied at
 startup under an advisory lock, so several instances can boot at once without racing on the catalog.
 
-38 tests, about two seconds. For a subset, prefix the same command:
+40 tests, about two seconds. For a subset, prefix the same command:
 `docker compose run --rm tests pytest tests/api` (or `tests/concurrency`, or `-k conflict`). They use a **separate database** on the same server, created by the test session and
 truncated between tests, so `docker compose up` data is never touched. The database log shows one
 `duplicate key` ERROR per run on purpose — it is the test that asserts the constraint — and the one
